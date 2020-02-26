@@ -285,6 +285,20 @@ fi
 AM_CONDITIONAL([HAS_BITFURY], [test x$bitfury = xyes])
 
 
+btc08="no"
+
+AC_ARG_ENABLE([btc08],
+	[AC_HELP_STRING([--enable-btc08],[Compile support for BTC08 ASICs STANDALONE(default disabled)])],
+	[btc08=$enableval]
+	)
+if test "x$btc08" = xyes; then
+	AC_DEFINE([USE_BTC08], [1], [Defined to 1 if BTC08 support is wanted])
+	drivercount=x$drivercount
+	standalone="yes"
+fi
+AM_CONDITIONAL([HAS_BTC08], [test x$btc08 = xyes])
+
+
 bitfury16="no"
 
 AC_ARG_ENABLE([bitfury16],
@@ -855,6 +869,12 @@ else
 	echo "  Spond-sp30.ASICs.....: Disabled"
 fi
 
+if test "x$btc08" = xyes; then
+	echo "  BTC08.ASICs........: Enabled"
+else
+	echo "  BTC08.ASICs........: Disabled"
+fi
+
 if test "x$bitmine_A1" = xyes; then
 	echo "  Bitmine-A1.ASICs.....: Enabled"
 else
@@ -910,7 +930,7 @@ else
 fi
 
 #Add any new device to this, along with a no on the end of the test
-if test "x$avalon$avalon2$avalon4$avalon7$avalon_miner$bab$bflsc$bitforce$bitfury$bitfury16$blockerupter$hashfast$hashratio$icarus$klondike$knc$modminer$drillbit$minion$cointerra$bitmine_A1$ants1$ants2$ants3$sp10$sp30$dragonmint_t1" = xnonononononononononononononononononononononononononono; then
+if test "x$avalon$avalon2$avalon4$avalon7$avalon_miner$bab$bflsc$bitforce$bitfury$bitfury16$blockerupter$hashfast$hashratio$icarus$klondike$knc$modminer$drillbit$minion$cointerra$btc08$bitmine_A1$ants1$ants2$ants3$sp10$sp30$dragonmint_t1" = xnonononononononononononononononononononononononononono; then
 	echo
 	AC_MSG_ERROR([No mining devices configured in])
 	echo

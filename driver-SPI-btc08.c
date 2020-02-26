@@ -1,0 +1,2267 @@
+/*
+ * cgminer SPI driver for BTC08 devices
+ *
+ * Copyright 2018 Jinyong, Lee <justin@nexell.com>
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the Free
+ * Software Foundation; either version 3 of the License, or (at your option)
+ * any later version.  See COPYING for more details.
+ */
+
+#include <stdlib.h>
+#include <assert.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <unistd.h>
+#include <stdbool.h>
+
+#include "spi-context.h"
+#include "logging.h"
+#include "miner.h"
+#include "util.h"
+
+#include "btc08-common.h"
+
+static struct spi_ctx *spi[MAX_SPI_PORT];
+static int spi_available_bus[MAX_SPI_PORT] = {0, 2};
+static int vctrl_pin[MAX_SPI_PORT] = {20, 9};
+static int plug_pin[MAX_SPI_PORT] = {24, 11};
+static int reset_pin[MAX_SPI_PORT] = {127, 132};
+static int gn_pin[MAX_SPI_PORT] = {126, 131};
+static int oon_pin[MAX_SPI_PORT] = {125, 130};
+static int adc_ch[MAX_SPI_PORT] = {0, 1};
+static int spi_idx = 0;
+
+/********** work queue */
+static bool wq_enqueue(struct work_queue *wq, struct work *work)
+{
+	if (work == NULL)
+		return false;
+	struct work_ent *we = malloc(sizeof(*we));
+	assert(we != NULL);
+
+	we->work = work;
+	INIT_LIST_HEAD(&we->head);
+	list_add_tail(&we->head, &wq->head);
+	wq->num_elems++;
+	return true;
+}
+
+static struct work *wq_dequeue(struct work_queue *wq)
+{
+	if (wq == NULL)
+		return NULL;
+	if (wq->num_elems == 0)
+		return NULL;
+	struct work_ent *we;
+	we = list_entry(wq->head.next, struct work_ent, head);
+	struct work *work = we->work;
+
+	list_del(&we->head);
+	free(we);
+	wq->num_elems--;
+	return work;
+}
+
+/*
+ * if not cooled sufficiently, communication fails and chip is temporary
+ * disabled. we let it inactive for 30 seconds to cool down
+ *
+ */
+#define COOLDOWN_MS (30 * 1000)
+/* if after this number of retries a chip is still inaccessible, disable it */
+#define DISABLE_CHIP_FAIL_THRESHOLD	3
+
+
+enum BTC08_command {
+	SPI_CMD_READ_ID			= 0x00,
+	SPI_CMD_AUTO_ADDRESS	= 0x01,
+	SPI_CMD_RUN_BIST		= 0x02,
+	SPI_CMD_READ_BIST		= 0x03,
+	SPI_CMD_RESET			= 0x04,
+	SPI_CMD_SET_PLL			= 0x05, /* noresponse */
+	SPI_CMD_READ_PLL		= 0x06,
+	SPI_CMD_WRITE_PARM		= 0x07,
+	SPI_CMD_READ_PARM		= 0x08,
+	SPI_CMD_WRITE_TARGET	= 0x09,
+	SPI_CMD_READ_TARGET		= 0x0A,
+	SPI_CMD_RUN_JOB			= 0x0B,
+	SPI_CMD_READ_JOB_ID		= 0x0C,
+	SPI_CMD_READ_RESULT		= 0x0D,
+	SPI_CMD_CLEAR_OON		= 0x0E,
+	SPI_CMD_SET_DISABLE		= 0x10,
+	SPI_CMD_READ_DISABLE	= 0x11,
+	SPI_CMD_SET_CONTROL		= 0x12,	/* no response */
+	SPI_CMD_READ_TEMP		= 0x14,
+	SPI_CMD_WRITE_NONCE		= 0x16,
+	SPI_CMD_READ_HASH		= 0x20,
+	SPI_CMD_READ_FEATURE	= 0x32,
+	SPI_CMD_READ_REVISION	= 0x33,
+	SPI_CMD_SET_PLL_FOUT_EN	= 0x34,
+	SPI_CMD_SET_PLL_RESETB 	= 0x35,
+};
+
+/*
+ * for now, we have one global config, defaulting values:
+ * - ref_clk 16MHz / sys_clk 800MHz
+ * - 2000 kHz SPI clock
+ */
+struct btc08_config_options btc08_config_options = {
+	.pll = 550, .udiv = (16+1), .spi_clk_khz = 500, .min_cores = DEFAULT_MIN_CORES, .min_chips = DEFAULT_MIN_CHIPS,
+};
+
+/* override values with --bitmine-btc08-options ref:sys:spi: - use 0 for default */
+static struct btc08_config_options *parsed_config_options;
+
+static uint8_t get_pin(int pin)
+{
+	uint32_t ret = 0;
+	int fd;
+	char pinpath[64];
+	sprintf(pinpath, "/sys/class/gpio/gpio%d/value", pin);
+	fd = open(pinpath, O_RDONLY);
+	if(fd==0) return -1;
+
+	lseek(fd, 0, SEEK_SET);
+	read(fd, &ret, 1);
+
+	close(fd);
+
+	return (uint8_t)ret;
+}
+
+static uint8_t set_pin(int pin, int val)
+{
+	uint32_t ret = 0;
+	int fd;
+	char pinpath[64];
+	sprintf(pinpath, "/sys/class/gpio/gpio%d/value", pin);
+	fd = open(pinpath, O_WRONLY);
+	if(fd==0) return -1;
+
+	if(val==0) ret = '0';
+	else ret = '1';
+	lseek(fd, 0, SEEK_SET);
+	write(fd, &ret, 1);
+
+	close(fd);
+
+	return (uint8_t)ret;
+}
+
+/* 0x000 : 0V
+ * 0xFFF : 1.8V
+ * (1.8/4096)xADC = voltage
+ *
+ * the result must be 0.5V
+ * 1.8*adc/4096 = 0.5
+ * adc = 0.5*(4096/1.8) ~= 1138
+ * min = 0.4*(4096/1.8) ~= 910
+ * max = 0.6*(4096/1.8) ~= 1365
+ */
+#define ad2mV(adc)  ((adc*1800)/4096)
+
+#define HASH_ADC_MIN    910
+#define HASH_ADC_MAX    1365
+
+static int get_mvolt(int ch)
+{
+	int ret = -1;
+	int fd, val = 0;
+	char adcpath[64];
+
+	sprintf(adcpath, "/sys/bus/iio/devices/iio\\:device0/in_voltage%d_raw", ch);
+	fd = open(adcpath, O_RDONLY);
+
+	ret = read(fd, &val, 4);
+
+	ret = ad2mV(val);
+
+	close(fd);
+
+	return ret;
+}
+
+static void applog_hexdump(char *prefix, uint8_t *buff, int len, int level)
+{
+	static char line[512];
+	char *pos = line;
+	int i;
+	if (len < 1)
+	{
+		return;
+	}
+
+	pos += sprintf(pos, "%s: %d bytes:", prefix, len);
+	for (i = 0; i < len; i++)
+	{
+		if (i > 0 && (i % 32) == 0)
+		{
+			applog(LOG_INFO, "%s", line);
+			pos = line;
+			pos += sprintf(pos, "\t");
+		}
+		pos += sprintf(pos, "%.2X ", buff[i]);
+	}
+	applog(level, "%s", line);
+}
+
+static void hexdump(char *prefix, uint8_t *buff, int len)
+{
+	applog_hexdump(prefix, buff, len, LOG_WARNING);
+}
+
+static void hexdump_error(char *prefix, uint8_t *buff, int len)
+{
+	applog_hexdump(prefix, buff, len, LOG_ERR);
+}
+/********** temporary helper for hexdumping SPI traffic */
+static void flush_spi(struct btc08_chain *btc08)
+{
+	memset(btc08->spi_tx, 0, 64);
+	bool ret;
+	ret = spi_transfer(btc08->spi_ctx, btc08->spi_tx, btc08->spi_rx, 64);
+	if(ret == false) {
+		btc08->disabled = true;
+		applog(LOG_ERR, "%d: %s() error", btc08->chain_id, __func__);
+	}
+	else
+		btc08->disabled = false;
+	applog(LOG_DEBUG, "%d: %s()", btc08->chain_id, __func__);
+	hexdump("send: TX", btc08->spi_tx, 64);
+	hexdump("send: RX", btc08->spi_rx, 64);
+}
+
+/********** upper layer SPI functions */
+static uint8_t *exec_cmd(struct btc08_chain *btc08,
+			  uint8_t cmd, uint8_t chip_id,
+			  uint8_t *data, uint8_t len,
+			  uint8_t resp_len)
+{
+	int tx_len = ALIGN((2 + len + resp_len), 4), ii;
+	bool ret;
+	memset(btc08->spi_tx, 0, tx_len);
+	btc08->spi_tx[0] = cmd;
+	btc08->spi_tx[1] = chip_id;
+
+	if (data != NULL)
+		memcpy(btc08->spi_tx + 2, data, len);
+
+	assert(ret = spi_transfer(btc08->spi_ctx, btc08->spi_tx, btc08->spi_rx, tx_len));
+	if(ret == false) {
+		btc08->disabled = true;
+		applog(LOG_ERR, "%d: %s() error", btc08->chain_id, __func__);
+	}
+	else
+		btc08->disabled = false;
+
+//	if((btc08->spi_tx[0] != SPI_CMD_READ_ID) ||
+//		(btc08->spi_rx[4] != 3)) {
+		hexdump("send: TX", btc08->spi_tx, tx_len);
+		hexdump("send: RX", btc08->spi_rx, tx_len);
+//	}
+
+	if(resp_len) {
+		for(ii=2+len; ii<(2+len+resp_len); ii++)
+			btc08->spi_rx[ii] ^= 0xff;
+	}
+
+
+	return (btc08->spi_rx + 2 + len);
+}
+
+#if 0
+static const uint8_t golden_midstat[256/8] = {
+	0x22, 0x8e, 0xa4, 0x73, 0x2a, 0x3c, 0x9b, 0xa8, 
+	0x60, 0xc0, 0x09, 0xcd, 0xa7, 0x25, 0x2b, 0x91, 
+	0x61, 0xa5, 0xe7, 0x5e, 0xc8, 0xc5, 0x82, 0xa5, 
+	0xf1, 0x06, 0xab, 0xb3, 0xaf, 0x41, 0xf7, 0x90
+};
+static const uint8_t golden_data[96/8] = {
+	0x21, 0x94, 0x26, 0x1a, 0x93, 0x95, 0xe6, 0x4d, 0xbe, 0xd1, 0x71, 0x15
+};
+static uint8_t golden_nonce[64/8] = {
+	0x0e, 0x33, 0x33, 0x7a, 0x0e, 0x33, 0x33, 0x7a
+};
+static uint8_t golden_hash[256/8] = {
+	0x00, 0x00, 0x00, 0x00, 0x89, 0xF8, 0x5C, 0xEA, 
+	0x5E, 0x26, 0xD5, 0x6E, 0x48, 0x99, 0x89, 0x2E, 
+	0x08, 0xAF, 0xF4, 0x2F, 0x11, 0xAE, 0x01, 0x8C, 
+	0xA8, 0x6B, 0xD5, 0x4B, 0xF7, 0xEE, 0x96, 0x8F
+};
+static uint8_t golden_param[360/8] = {
+	/* midstat */
+	0x22, 0x8e, 0xa4, 0x73, 0x2a, 0x3c, 0x9b, 0xa8, 
+	0x60, 0xc0, 0x09, 0xcd, 0xa7, 0x25, 0x2b, 0x91, 
+	0x61, 0xa5, 0xe7, 0x5e, 0xc8, 0xc5, 0x82, 0xa5, 
+	0xf1, 0x06, 0xab, 0xb3, 0xaf, 0x41, 0xf7, 0x90,
+	/* data */
+	0x21, 0x94, 0x26, 0x1a, 0x93, 0x95, 0xe6, 0x4d, 0xbe, 0xd1, 0x71, 0x15,
+	/* TODO: select */
+	0x00,
+};
+#endif
+#if 0
+static const uint8_t golden_midstat[256/8] = {
+	0xa2, 0x60, 0x4d, 0x5f, 0x07, 0xc4, 0x85, 0x53, 
+	0x0c, 0x4e, 0xa8, 0xc2, 0xc4, 0x69, 0x91, 0x25, 
+	0x4b, 0xa5, 0xa4, 0x10, 0x08, 0x17, 0xf7, 0x93, 
+	0xec, 0xdf, 0xab, 0xf1, 0xd2, 0x81, 0x8b, 0x6e,
+};
+
+static const uint8_t golden_data[96/8] = {
+	0x17, 0x37, 0x6f, 0x56, 0x5b, 0x30, 0x70, 0x7e, 
+	0xf4, 0x2a, 0x1d, 0x6e
+};
+
+static uint8_t golden_nonce[(32+32)/8] = {
+	0x66, 0xcb, 0x34, 0x26, 0x66, 0xcb, 0x34, 0x26
+};
+
+static uint8_t golden_hash[256/8] = {
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
+	0x00, 0x22, 0x09, 0x3d, 0xd4, 0x38, 0xed, 0x47, 
+	0xfa, 0x28, 0xe7, 0x18, 0x58, 0xb8, 0x22, 0x0d, 
+	0x53, 0xe5, 0xcd, 0x83, 0xb8, 0xd0, 0xd4, 0x42
+};
+
+static uint8_t golden_param[(256+96+16)/8] = {
+	/* midstat */
+	0x5f, 0x4d, 0x60, 0xa2, 0x07, 0xc4, 0x85, 0x53, 
+	0xc2, 0xa8, 0x4e, 0x0c, 0xc4, 0x69, 0x91, 0x25, 
+	0x10, 0xa4, 0xa5, 0x4b, 0x08, 0x17, 0xf7, 0x93, 
+	0xf1, 0xab, 0xdf, 0xec, 0xd2, 0x81, 0x8b, 0x6e, 
+	/* data */
+	0xf4, 0x2a, 0x1d, 0x6e, 0x5b, 0x30, 0x70, 0x7e, 
+	0x17, 0x37, 0x6f, 0x56, 
+	/* select */
+	0x06, 0x30
+};
+
+static uint8_t golden_target[6] = {
+	0x1f, 0xff, 0xff, 0xff, 0x06, 0x30
+};
+
+static uint8_t golden_disable[256/8] = {
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
+#endif
+static uint8_t golden_nonce[(32+32)/8] = {
+	0x99, 0x62, 0xe3, 0x01, 0x99, 0x62, 0xe3, 0x01
+};
+
+static uint8_t golden_hash[256/8] = {
+	0x00, 0x00, 0x00, 0x00, 0x83, 0x9a, 0x8e, 0x68, 
+	0x86, 0xab, 0x59, 0x51, 0xd7, 0x6f, 0x41, 0x14, 
+	0x75, 0x42, 0x8a, 0xfc, 0x90, 0x94, 0x7e, 0xe3, 
+	0x20, 0x16, 0x1b, 0xbf, 0x18, 0xeb, 0x60, 0x48
+};
+
+static uint8_t golden_param[(256+96+16)/8] = {
+	0x23, 0x13, 0xf6, 0xa9, 0x30, 0x2a, 0xbb, 0x7f, 
+	0xd4, 0xa2, 0x6c, 0x06, 0x69, 0x78, 0x61, 0x7d, 
+	0xe0, 0x0e, 0xbd, 0xcc, 0x75, 0x7b, 0x75, 0x28, 
+	0x6f, 0x64, 0xf2, 0x5f, 0xac, 0x01, 0x75, 0x0e,
+	0x0e, 0x3e, 0x23, 0x57, 0x49, 0x66, 0xbc, 0x61, 
+	0x1d, 0x00, 0xff, 0xff
+};
+
+static uint8_t golden_target[6] = {
+	0x1d, 0x00, 0xff, 0xff, 0x06, 0x10
+};
+
+static uint8_t golden_disable[256/8] = {
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
+/********** btc08 SPI commands */
+static uint8_t *cmd_BIST_BCAST(struct btc08_chain *btc08, uint8_t chip_id)
+{
+	uint8_t *ret;
+
+	ret = exec_cmd(btc08, SPI_CMD_WRITE_PARM, chip_id, golden_param, WRITE_JOB_LENGTH, 2);
+//	if (ret == NULL || ret[0] != SPI_CMD_WRITE_PARM) {
+//		applog(LOG_ERR, "%d: SPI_CMD_WRITE_PARM failed", btc08->chain_id);
+//		return NULL;
+//	}
+
+	ret = exec_cmd(btc08, SPI_CMD_WRITE_TARGET, chip_id, golden_target, 6, 2);
+//	if (ret == NULL || ret[0] != SPI_CMD_WRITE_TARGET) {
+//		applog(LOG_ERR, "%d: SPI_CMD_WRITE_TARGET failed", btc08->chain_id);
+//		return NULL;
+//	}
+
+	ret = exec_cmd(btc08, SPI_CMD_WRITE_NONCE, chip_id, golden_nonce, 8, 2);
+//	if (ret == NULL || ret[0] != SPI_CMD_WRITE_NONCE) {
+//		applog(LOG_ERR, "%d: SPI_CMD_WRITE_NONCE failed", btc08->chain_id);
+//		return NULL;
+//	}
+
+	ret = exec_cmd(btc08, SPI_CMD_SET_DISABLE, chip_id, golden_disable, 32, 2);
+//	if (ret == NULL || ret[0] != SPI_CMD_SET_DISABLE) {
+//		applog(LOG_ERR, "%d: SPI_CMD_WRITE_NONCE failed", btc08->chain_id);
+//		return NULL;
+//	}
+
+	ret = exec_cmd(btc08, SPI_CMD_RUN_BIST, chip_id, golden_hash, 256/8, 2);
+//	if (ret == NULL || ret[0] != SPI_CMD_RUN_BIST) {
+//		applog(LOG_ERR, "%d: SPI_CMD_RUN_BIST failed", btc08->chain_id);
+//		return NULL;
+//	}
+	return ret;
+}
+
+static uint8_t *cmd_RESET_BCAST(struct btc08_chain *btc08)
+{
+	uint8_t *ret = exec_cmd(btc08, SPI_CMD_RESET, 0x00, NULL, 0, 2);
+//	if (ret == NULL || (ret[0] != SPI_CMD_RESET && btc08->num_chips != 0)) {
+//		applog(LOG_ERR, "%d: cmd_RESET_BCAST failed", btc08->chain_id);
+//		return NULL;
+//	}
+	applog(LOG_ERR, "%d: cmd_RESET_BCAST", btc08->chain_id);
+	return ret;
+}
+
+static uint8_t *cmd_READ_RESULT_BCAST(struct btc08_chain *btc08)
+{
+	int tx_len = 6+2;
+	bool ret;
+	memset(btc08->spi_tx, 0, tx_len);
+	btc08->spi_tx[0] = SPI_CMD_READ_JOB_ID;
+
+	int ii;
+	assert(ret = spi_transfer(btc08->spi_ctx, btc08->spi_tx, btc08->spi_rx, tx_len));
+//	if((btc08->spi_rx[2] != 0xff) &&
+//		(btc08->spi_rx[3] != 0xff) &&
+//		(btc08->spi_rx[4] != 0xff) &&
+//		(btc08->spi_rx[5] != 0xff) &&
+//		(btc08->spi_rx[6] != 0xff) &&
+//		(btc08->spi_rx[7] != 0xff) ) {
+		hexdump("send: TX", btc08->spi_tx, tx_len);
+		hexdump("send: RX", btc08->spi_rx, tx_len);
+//	}
+	if(ret == false) {
+		btc08->disabled = true;
+		applog(LOG_ERR, "%d: %s() error", btc08->chain_id, __func__);
+	}
+	else
+		btc08->disabled = false;
+
+	uint8_t *scan = btc08->spi_rx;
+	scan+=2;
+
+	scan[0] ^= 0xff;
+	scan[1] ^= 0xff;
+	scan[2] ^= 0xff;
+	scan[3] ^= 0xff;
+
+	return scan;
+}
+static uint8_t *cmd_READ_RESULT(struct btc08_chain *btc08, uint8_t chip_id)
+{
+	int tx_len = ALIGN(6, 4);
+	bool ret;
+	memset(btc08->spi_tx, 0, tx_len);
+	btc08->spi_tx[0] = SPI_CMD_READ_RESULT;
+	btc08->spi_tx[1] = chip_id;
+
+	assert(ret = spi_transfer(btc08->spi_ctx, btc08->spi_tx, btc08->spi_rx, tx_len));
+	if(ret == false) {
+		btc08->disabled = true;
+		applog(LOG_ERR, "%d: %s() error", btc08->chain_id, __func__);
+	}
+	else
+		btc08->disabled = false;
+
+	hexdump("send: TX", btc08->spi_tx, tx_len);
+	hexdump("send: RX", btc08->spi_rx, tx_len);
+	btc08->spi_rx[2] ^= 0xff;
+	btc08->spi_rx[3] ^= 0xff;
+	btc08->spi_rx[4] ^= 0xff;
+	btc08->spi_rx[5] ^= 0xff;
+
+	return &(btc08->spi_rx[2]);
+}
+
+static uint8_t *cmd_CLEAR_OON(struct btc08_chain *btc08, uint8_t chip_id)
+{
+	int tx_len = ALIGN(4, 4);
+	bool ret;
+	memset(btc08->spi_tx, 0, tx_len);
+	btc08->spi_tx[0] = SPI_CMD_CLEAR_OON;
+	btc08->spi_tx[1] = chip_id;
+
+	assert(ret = spi_transfer_x20(btc08->spi_ctx, btc08->spi_tx, btc08->spi_rx, tx_len));
+	hexdump("send: TX", btc08->spi_tx, tx_len);
+	hexdump("send: RX", btc08->spi_rx, tx_len);
+	if(ret == false) {
+		btc08->disabled = true;
+		applog(LOG_ERR, "%d: %s() error", btc08->chain_id, __func__);
+	}
+	else
+		btc08->disabled = false;
+
+	return &(btc08->spi_rx[2]);
+}
+
+static uint8_t *cmd_READ_HASH(struct btc08_chain *btc08, uint8_t chip_id)
+{
+	int tx_len = ALIGN(2+32, 4), ii;
+	bool ret;
+	memset(btc08->spi_tx, 0, tx_len);
+	btc08->spi_tx[0] = SPI_CMD_READ_HASH;
+	btc08->spi_tx[1] = chip_id;
+
+	assert(ret = spi_transfer(btc08->spi_ctx, btc08->spi_tx, btc08->spi_rx, tx_len));
+	hexdump("send: TX", btc08->spi_tx, tx_len);
+	hexdump("send: RX", btc08->spi_rx, tx_len);
+	if(ret == false) {
+		btc08->disabled = true;
+		applog(LOG_ERR, "%d: %s() error", btc08->chain_id, __func__);
+	}
+	else
+		btc08->disabled = false;
+
+	for(ii=2; ii<(32+2); ii++)
+		btc08->spi_rx[ii] ^= 0xff;
+	return &(btc08->spi_rx[2]);
+}
+
+static uint8_t *cmd_READ_ID(struct btc08_chain *btc08, uint8_t chip_id)
+{
+	uint8_t *ret = exec_cmd(btc08, SPI_CMD_READ_ID, chip_id, NULL, 0, 4);
+	if (ret == NULL || ret[3] != chip_id) {
+		applog(LOG_ERR, "%d: cmd_READ_ID chip %d failed",
+		       btc08->chain_id, chip_id);
+		return NULL;
+	}
+//	memcpy(btc08->spi_rx, ret, 4);
+	return ret;
+}
+
+static uint32_t nbits_from_target(unsigned char *target)
+{
+	uint32_t ret = 0;
+	int ii= 31;
+
+	while(target[ii--]==0);
+	ii++;
+
+	if(target[ii-2] == 0) ii++;
+
+	ret = (ii+1)<<24;
+	ret |= target[ii-0]<<16;
+	ret |= target[ii-1]<< 8;
+	ret |= target[ii-2]<< 0;
+
+	return ret;
+}
+
+static uint8_t cmd_WRITE_JOB_test(struct btc08_chain *btc08, uint8_t job_id, uint8_t *job, uint8_t chip_id)
+{
+	int ii=0, spi_len0, spi_len1, spi_len2, ret = 0;
+	bool retb;
+	/* ensure we push the SPI command to the last chip in chain */
+	uint8_t *spi_tx = job;
+	struct spi_ioc_transfer *xfr = btc08->xfr;
+
+	int tx_len;
+
+	tx_len = ALIGN((WRITE_JOB_LENGTH + 2), 4);
+	// WRITE_PARM
+	hexdump("send: TX", spi_tx, tx_len);
+	xfr[0].tx_buf = (unsigned long)spi_tx;
+	xfr[0].rx_buf = (unsigned long)NULL;
+	xfr[0].len = tx_len;
+	xfr[0].speed_hz = btc08->spi_ctx->config.speed*20;
+	xfr[0].delay_usecs = btc08->spi_ctx->config.delay;
+	xfr[0].bits_per_word = btc08->spi_ctx->config.bits;
+	xfr[0].tx_nbits = 0;
+	xfr[0].rx_nbits = 0;
+	xfr[0].pad = 0;
+	spi_tx += tx_len;
+
+	// CLEAR_OON
+	tx_len = 4;
+
+	spi_tx[0] = SPI_CMD_CLEAR_OON;
+	spi_tx[1] = 0;
+	hexdump("send: TX", spi_tx, tx_len);
+	xfr[1].tx_buf = (unsigned long)spi_tx;
+	xfr[1].rx_buf = (unsigned long)NULL;
+	xfr[1].len = tx_len;
+	xfr[1].speed_hz = btc08->spi_ctx->config.speed*20;
+	xfr[1].delay_usecs = btc08->spi_ctx->config.delay;
+	xfr[1].bits_per_word = btc08->spi_ctx->config.bits;
+	xfr[1].tx_nbits = 0;
+	xfr[1].rx_nbits = 0;
+	xfr[1].pad = 0;
+	spi_tx += tx_len; 
+
+	ii = 2;
+
+	// WRITE_TARGET
+	tx_len = 10;
+	spi_tx[0] = SPI_CMD_WRITE_TARGET;
+	spi_tx[1] = 0;
+	spi_tx[2] = 0x19;
+	spi_tx[3] = 0;
+	spi_tx[4] = 0x89;
+	spi_tx[5] = 0x6c;
+	spi_tx[6] = 0x05;
+	spi_tx[7] = 0x10;
+	spi_tx[8] = 0;
+	hexdump("send: TX", spi_tx, tx_len);
+	xfr[ii].tx_buf = (unsigned long)spi_tx;
+	xfr[ii].rx_buf = (unsigned long)NULL;
+	xfr[ii].len = tx_len;
+	xfr[ii].speed_hz = btc08->spi_ctx->config.speed*20;
+	xfr[ii].delay_usecs = btc08->spi_ctx->config.delay;
+	xfr[ii].bits_per_word = btc08->spi_ctx->config.bits;
+	xfr[ii].tx_nbits = 0;
+	xfr[ii].rx_nbits = 0;
+	xfr[ii].pad = 0;
+
+	ii += 1;
+	spi_tx += tx_len;
+
+	// RUN_JOB
+	tx_len = 8;
+	spi_tx[0] = SPI_CMD_RUN_JOB;
+	spi_tx[1] = chip_id;
+	spi_tx[2] = 0;
+	spi_tx[3] = job_id;
+	hexdump("send: TX", spi_tx, tx_len);
+	xfr[ii].tx_buf = (unsigned long)spi_tx;
+	xfr[ii].rx_buf = (unsigned long)NULL;
+	xfr[ii].len = tx_len;
+	xfr[ii].speed_hz = btc08->spi_ctx->config.speed*20;
+	xfr[ii].delay_usecs = btc08->spi_ctx->config.delay;
+	xfr[ii].bits_per_word = btc08->spi_ctx->config.bits;
+	xfr[ii].tx_nbits = 0;
+	xfr[ii].rx_nbits = 0;
+	xfr[ii].pad = 0;
+
+	ii += 1;
+
+	assert(retb = spi_transfer_x20_a(btc08->spi_ctx, btc08->xfr, ii));
+	if(retb == false) {
+		btc08->disabled = true;
+		applog(LOG_ERR, "%d: %s() error", btc08->chain_id, __func__);
+	}
+	else
+		btc08->disabled = false;
+
+	return true;
+}
+
+static uint8_t cmd_WRITE_JOB_fast(struct btc08_chain *btc08,
+			      uint8_t job_id, uint8_t *job, struct work *work)
+{
+	int ii=0, spi_len0, spi_len1, spi_len2, ret = 0;
+	bool retb;
+	/* ensure we push the SPI command to the last chip in chain */
+	uint8_t *spi_tx = job;
+	struct spi_ioc_transfer *xfr = btc08->xfr;
+
+	int tx_len;
+
+	tx_len = ALIGN((WRITE_JOB_LENGTH + 2), 4);
+	// WRITE_PARM
+	hexdump("send: TX", spi_tx, tx_len);
+	xfr[0].tx_buf = (unsigned long)spi_tx;
+	xfr[0].rx_buf = (unsigned long)NULL;
+	xfr[0].len = tx_len;
+	xfr[0].speed_hz = btc08->spi_ctx->config.speed*20;
+	xfr[0].delay_usecs = btc08->spi_ctx->config.delay;
+	xfr[0].bits_per_word = btc08->spi_ctx->config.bits;
+	xfr[0].tx_nbits = 0;
+	xfr[0].rx_nbits = 0;
+	xfr[0].pad = 0;
+	spi_tx += tx_len;
+
+	// CLEAR_OON
+	tx_len = 4;
+
+	spi_tx[0] = SPI_CMD_CLEAR_OON;
+	spi_tx[1] = 0;
+	hexdump("send: TX", spi_tx, tx_len);
+	xfr[1].tx_buf = (unsigned long)spi_tx;
+	xfr[1].rx_buf = (unsigned long)NULL;
+	xfr[1].len = tx_len;
+	xfr[1].speed_hz = btc08->spi_ctx->config.speed*20;
+	xfr[1].delay_usecs = btc08->spi_ctx->config.delay;
+	xfr[1].bits_per_word = btc08->spi_ctx->config.bits;
+	xfr[1].tx_nbits = 0;
+	xfr[1].rx_nbits = 0;
+	xfr[1].pad = 0;
+	spi_tx += tx_len; 
+
+	ii = 2;
+
+	// WRITE_TARGET
+	if(btc08->sdiff != work->sdiff)
+	{
+		tx_len = 9;
+		btc08->sdiff = work->sdiff;
+		/* target */
+		uint32_t nbits = nbits_from_target(work->target);
+		uint32_t *nbits_ptr = (uint32_t *)(spi_tx+2);
+		uint8_t *nbits_ptr_b = (uint8_t *)(spi_tx+2);
+		uint8_t *select = (uint8_t *)(spi_tx+2+4);
+		*nbits_ptr = nbits;
+		select[0] = select[1] = nbits_ptr_b[3];
+		select[0] = ((select[0]-1)>>2)-1;
+		select[1] = (((select[1]-1)&3)+1)<<4;;
+		*nbits_ptr = bswap_32(nbits);
+		spi_tx[0] = SPI_CMD_WRITE_TARGET;
+		spi_tx[1] = 0;
+		spi_tx[8] = 0;
+		hexdump_error("send: TX", spi_tx, tx_len);
+		hexdump_error("target:", work->target, 32);
+		applog(LOG_ERR, "diff : %.2f", btc08->sdiff);
+
+		xfr[ii].tx_buf = (unsigned long)spi_tx;
+		xfr[ii].rx_buf = (unsigned long)NULL;
+		xfr[ii].len = tx_len;
+		xfr[ii].speed_hz = btc08->spi_ctx->config.speed*20;
+		xfr[ii].delay_usecs = btc08->spi_ctx->config.delay;
+		xfr[ii].bits_per_word = btc08->spi_ctx->config.bits;
+		xfr[ii].tx_nbits = 0;
+		xfr[ii].rx_nbits = 0;
+		xfr[ii].pad = 0;
+
+		ii += 1;
+		spi_tx += tx_len;
+	}
+
+	// RUN_JOB
+	tx_len = 5;
+	spi_tx[0] = SPI_CMD_RUN_JOB;
+	spi_tx[1] = 0;
+	spi_tx[2] = 0;
+	spi_tx[3] = job_id;
+	hexdump("send: TX", spi_tx, tx_len);
+	xfr[ii].tx_buf = (unsigned long)spi_tx;
+	xfr[ii].rx_buf = (unsigned long)NULL;
+	xfr[ii].len = tx_len;
+	xfr[ii].speed_hz = btc08->spi_ctx->config.speed*20;
+	xfr[ii].delay_usecs = btc08->spi_ctx->config.delay;
+	xfr[ii].bits_per_word = btc08->spi_ctx->config.bits;
+	xfr[ii].tx_nbits = 0;
+	xfr[ii].rx_nbits = 0;
+	xfr[ii].pad = 0;
+
+	ii += 1;
+
+	assert(retb = spi_transfer_x20_a(btc08->spi_ctx, btc08->xfr, ii));
+	if(retb == false) {
+		btc08->disabled = true;
+		applog(LOG_ERR, "%d: %s() error", btc08->chain_id, __func__);
+	}
+	else
+		btc08->disabled = false;
+
+	return true;
+}
+
+static uint8_t cmd_READ_TEMP(struct btc08_chain *btc08, uint8_t chip_id)
+{
+	uint8_t *ret;
+	if(((btc08->chips[btc08->num_chips-1].rev>>16)&0xf) == 0x0) return 30; // for FPGA, there is no temperature sensor in FPGA, so 30 is just a value for testing
+	ret = exec_cmd(btc08, SPI_CMD_READ_TEMP, chip_id, NULL, 0, 2);
+	if (ret == NULL || ret[0] != chip_id) {
+		applog(LOG_ERR, "%d: cmd_READ_TEMP chip %d failed",
+		       btc08->chain_id, chip_id);
+		return 0;
+	}
+	return ret[1];
+}
+
+/********** btc08 low level functions */
+#define MAX_PLL_WAIT_CYCLES 25
+#define PLL_CYCLE_WAIT_TIME 40
+static bool check_chip_pll_lock(struct btc08_chain *btc08, int chip_id)
+{
+	int n;
+	int cid = btc08->chain_id;
+	uint8_t *ret;
+
+	for (n = 0; n < MAX_PLL_WAIT_CYCLES; n++) {
+		/* check for PLL lock status */
+		ret = exec_cmd(btc08, SPI_CMD_READ_PLL, chip_id, NULL, 0, 4);
+		if(ret[1] != SPI_CMD_READ_PLL) {
+			applog(LOG_WARNING, "%d: error in READ_PLL", cid);
+			return false;
+		}
+		if(ret[2]&(1<<7)) {
+			applog(LOG_WARNING, "%d: PLL locked %d(0x%x)CHIP", cid, chip_id, chip_id);
+			return true;
+		}
+
+		cgsleep_ms(PLL_CYCLE_WAIT_TIME);
+	}
+	applog(LOG_ERR, "%d: chip %d failed PLL lock", cid, chip_id);
+	return false;
+}
+
+struct pll_conf {
+	int freq;
+	union {
+		struct {
+			int p        : 6;
+			int m        :10;
+			int s        : 3;
+			int bypass   : 1;
+			int div_sel  : 1;
+			int afc_enb  : 1;
+			int extafc   : 5;
+			int feed_en  : 1;
+			int fsel     : 1;
+			int rsvd     : 3;
+		};
+		unsigned int val;
+	};
+};
+
+static struct pll_conf pll_sets[] = {
+	{ 300, {6, 600, 2, 0, 1, 0, 0, 0, 0, 0}},
+	{ 350, {6, 700, 2, 0, 1, 0, 0, 0, 0, 0}},
+	{ 400, {6, 400, 1, 0, 1, 0, 0, 0, 0, 0}},
+	{ 450, {6, 450, 1, 0, 1, 0, 0, 0, 0, 0}},
+	{ 500, {6, 500, 1, 0, 1, 0, 0, 0, 0, 0}},
+	{ 550, {6, 550, 1, 0, 1, 0, 0, 0, 0, 0}},
+	{ 600, {6, 600, 1, 0, 1, 0, 0, 0, 0, 0}},
+	{ 650, {6, 650, 1, 0, 1, 0, 0, 0, 0, 0}},
+	{ 700, {6, 700, 1, 0, 1, 0, 0, 0, 0, 0}},
+	{ 750, {6, 750, 1, 0, 1, 0, 0, 0, 0, 0}},
+	{ 800, {6, 800, 1, 0, 1, 0, 0, 0, 0, 0}},
+	{ 850, {6, 425, 0, 0, 1, 0, 0, 0, 0, 0}},
+	{ 900, {6, 450, 0, 0, 1, 0, 0, 0, 0, 0}},
+	{ 950, {6, 475, 0, 0, 1, 0, 0, 0, 0, 0}},
+	{1000, {6, 500, 0, 0, 1, 0, 0, 0, 0, 0}},
+};
+
+#define NUM_PLL_SET (sizeof(pll_sets)/sizeof(struct pll_conf))
+
+static int get_pll_idx(int pll)
+{
+	int ret, ii;
+
+	struct pll_conf *plls;
+
+	if(pll < pll_sets[0].freq)
+		return -1;
+	if(pll > pll_sets[NUM_PLL_SET-1].freq) {
+		applog(LOG_WARNING, "set to Max Frequency setting (%d)", pll_sets[NUM_PLL_SET-1].freq);
+		return (NUM_PLL_SET-1);
+	}
+
+	ret = 0;
+	for(plls = &pll_sets[0]; plls; plls++) {
+		if(pll <= plls->freq) break;
+		ret++;
+	}
+	return ret;
+}
+
+static bool set_pll_fout_en(struct btc08_chain *btc08, int chip_id, int en)
+{
+	uint8_t *ret;
+	uint8_t sbuf[2];
+	// PLL_FOUT_EN:1
+	sbuf[0] = 0;
+	sbuf[1] = 1;
+	ret = exec_cmd(btc08, SPI_CMD_SET_PLL_FOUT_EN, chip_id, sbuf, 2, 0);
+	return true;
+}
+
+static bool set_pll_config(struct btc08_chain *btc08, int chip_id, int pll)
+{
+	int ii;
+	uint8_t *ret;
+	uint8_t sbuf[4];
+	int cid = btc08->chain_id;
+
+	int chip_index = chip_id -1;
+	if(btc08->last_chip)
+		chip_index += (btc08->last_chip-1);
+
+	if(((btc08->chips[btc08->num_chips-1].rev>>16)&0xf) == 0x0) {
+		if(chip_id) {
+			btc08->chips[chip_index].mhz = 100;
+			applog(LOG_WARNING, "%d: chip%d: skip PLL because FPGA", cid, chip_index);
+		}
+		else {
+			for(ii=btc08->last_chip; ii<btc08->num_chips; ii++)
+				btc08->chips[ii].mhz = 100;
+			applog(LOG_WARNING, "%d: chip%d~%d: skip PLL because FPGA", cid, btc08->last_chip, (btc08->num_chips-1));
+		}
+	}
+	else {
+		int pll_idx;
+		pll_idx = get_pll_idx(pll);
+
+		if(pll_idx < 0) {
+			applog(LOG_ERR, "%d: too low frequency (%d), it must be over than %d", pll, pll_sets[0].freq);
+			return false;
+		}
+
+		// PLL_RESETB:0
+		sbuf[0] = 0;
+		sbuf[1] = 0;
+		ret = exec_cmd(btc08, SPI_CMD_SET_PLL_RESETB, chip_id, sbuf, 2, 0);
+		// PLL_FOUT_EN:0
+		set_pll_fout_en(btc08, chip_id, 0);
+
+		sbuf[0] = (uint8_t)(pll_sets[pll_idx].val>>24)&0xff;
+		sbuf[1] = (uint8_t)(pll_sets[pll_idx].val>>16)&0xff;
+		sbuf[2] = (uint8_t)(pll_sets[pll_idx].val>> 8)&0xff;
+		sbuf[3] = (uint8_t)(pll_sets[pll_idx].val>> 0)&0xff;
+		ret = exec_cmd(btc08, SPI_CMD_SET_PLL, chip_id, sbuf, 4, 0);
+
+		if(chip_id) {
+			if (!check_chip_pll_lock(btc08, chip_id)) {
+				applog(LOG_ERR, "%d: chip %d (chip_id:%d) failed PLL lock",
+					   cid, chip_index, chip_id);
+				btc08->chips[chip_index].mhz = 0;
+				return false;
+			}
+			else
+				btc08->chips[chip_index].mhz = pll_sets[pll_idx].freq;
+		}
+		else {
+			int res = 0;
+			for(ii=btc08->last_chip; ii<btc08->num_chips; ii++) {
+				int chipid = ii +1;
+				if(btc08->last_chip)
+					chipid += (1-btc08->last_chip);
+
+				if (!check_chip_pll_lock(btc08, chipid)) {
+					applog(LOG_ERR, "%d: chip %d (chipid:%d) failed PLL lock",
+						   cid, ii, chipid);
+					btc08->chips[ii].mhz = 0;
+					res++;
+				}
+				else
+					btc08->chips[ii].mhz = pll_sets[pll_idx].freq;
+			}
+			if(res) return false;
+		}
+	}
+	return true;
+}
+
+static bool set_control(struct btc08_chain *btc08, int chip_id, int udiv)
+{
+	uint8_t *ret;
+	uint8_t sbuf[4];
+
+	sbuf[0] = (uint8_t)(udiv>>24)&0xff;
+	sbuf[1] = (uint8_t)(udiv>>16)&0xff;
+	sbuf[2] = (uint8_t)(udiv>> 8)&0xff;
+	sbuf[3] = (uint8_t)(udiv>> 0)&0xff;
+	ret = exec_cmd(btc08, SPI_CMD_SET_CONTROL, chip_id, sbuf, 4, 0);
+
+	return true;
+}
+
+static bool check_chip(struct btc08_chain *btc08, int chip_id, int chip_index)
+{
+	int cid = btc08->chain_id;
+	int ii;
+	uint8_t *ret;
+
+	for(ii=0; ii<10; ii++) {
+		ret = exec_cmd(btc08, SPI_CMD_READ_BIST, chip_id, NULL, 0, 2);
+		if((ret[0]&1)==0) break;
+		cgsleep_ms(200);
+	}
+	ret = exec_cmd(btc08, SPI_CMD_READ_BIST, chip_id, NULL, 0, 2);
+	if(ret[0]&1) {
+		applog(LOG_WARNING, "%d: error in READ_BIST", cid);
+		return false;
+	}
+
+	btc08->chips[chip_index].num_cores = ret[1];
+	if(((btc08->chips[chip_index].rev>>16)&0xf) != 0x0) {
+		if(btc08->chips[chip_index].num_cores < btc08_config_options.min_cores) {
+			applog(LOG_ERR, "%d: chip %d has not enough cores(%d), it must be over than %d", cid, chip_id, btc08->chips[chip_index].num_cores, btc08_config_options.min_cores);
+			btc08->chips[chip_index].num_cores = 0;
+			btc08->chips[chip_index].perf = 0;
+			return false;
+		}
+	}
+	applog(LOG_WARNING, "%d: Found chip %d(chipid:%d) with %d active cores",
+	       cid, chip_index, chip_id, btc08->chips[chip_index].num_cores);
+
+	btc08->num_cores += btc08->chips[chip_index].num_cores;
+	btc08->chips[chip_index].perf = btc08->chips[chip_index].num_cores*btc08->chips[chip_index].mhz;
+	applog(LOG_DEBUG, "%d: chip %d perf = %ld\n", cid, chip_id, btc08->chips[chip_index].perf);
+	btc08->perf += btc08->chips[chip_index].perf;
+
+	return true;
+}
+
+static bool calc_nonce_range(struct btc08_chain *btc08)
+{
+	int ii;
+	uint8_t *spi_tx = btc08->spi_tx;
+	uint32_t *start_nonce_ptr;
+	uint32_t *  end_nonce_ptr;
+	bool ret;
+
+	if(btc08_config_options.test_mode == 1) {
+		for(ii=btc08->last_chip; ii<btc08->num_chips; ii++) {
+			btc08->chips[ii].start_nonce = 0;
+			btc08->chips[ii].end_nonce = 0xffffffff;
+		}
+	}
+	else {
+		btc08->chips[btc08->last_chip].start_nonce = 0;
+		for(ii=btc08->last_chip; ii<(btc08->num_chips-1); ii++) {
+			btc08->chips[ii].end_nonce = btc08->chips[ii].start_nonce
+				+ ((0xffffffff*btc08->chips[ii].perf)/btc08->perf);
+			btc08->chips[ii+1].start_nonce = btc08->chips[ii].end_nonce+1;
+		}
+		btc08->chips[btc08->num_chips-1].end_nonce = 0xffffffff;
+	}
+
+	btc08->disabled = false;
+	for(ii=btc08->last_chip; ii<btc08->num_chips; ii++) {
+		int chip_id = ii +1;
+		if(btc08->last_chip)
+			chip_id += (1 -btc08->last_chip);
+		applog(LOG_DEBUG, "chip %2d(chip_index:%d) : %08X ~ %08X", chip_id, ii, btc08->chips[ii].start_nonce, btc08->chips[ii].end_nonce);
+
+		start_nonce_ptr = (uint32_t *)(spi_tx+2  );
+		end_nonce_ptr   = (uint32_t *)(spi_tx+2+4);
+		spi_tx[0] = SPI_CMD_WRITE_NONCE;
+
+		*start_nonce_ptr = bswap_32(btc08->chips[ii].start_nonce);
+		  *end_nonce_ptr = bswap_32(btc08->chips[ii].end_nonce);
+		spi_tx[1] = ii+1;
+		spi_tx[10] = 0;
+
+		ret = spi_transfer(btc08->spi_ctx, btc08->spi_tx, btc08->spi_rx, 12);
+		hexdump("send: TX", btc08->spi_tx, 12);
+		hexdump("send: RX", btc08->spi_rx, 12);
+		if(ret == false) {
+			btc08->disabled = true;
+			applog(LOG_ERR, "%d: %s() error", btc08->chain_id, __func__);
+			break;
+		}
+	}
+
+	return true;
+}
+
+static void reset_gpio(struct btc08_chain *btc08, int on)
+{
+	int fd_gpio;
+	char gpio_str[64];
+	sprintf(gpio_str, "/sys/class/gpio/gpio%d/value", btc08->pinnum_gpio_reset);
+
+	fd_gpio = open(gpio_str, O_WRONLY);
+	if(fd_gpio<0) {
+		applog(LOG_ERR, "%d: %s(%d) error, open error (gpio:%d)", btc08->chain_id, __func__, on, btc08->pinnum_gpio_reset);
+		return;
+	}
+	if(on)
+		write(fd_gpio, "1", 2);	// reset
+	else
+		write(fd_gpio, "0", 2);	// reset
+	close(fd_gpio);
+}
+
+/*
+ * RUN_BIST works only once after HW reset, on subsequent calls it
+ * returns 0 as number of chips.
+ */
+static int chain_detect(struct btc08_chain *btc08)
+{
+	int ii;
+	uint8_t dummy[32];
+	int cid = btc08->chain_id;
+	uint8_t *ret;
+	uint32_t *ret32;
+
+	// SPI_CMD_RESET
+//	ret = exec_cmd(btc08, SPI_CMD_RESET, 0x00, NULL, 0, 2);
+//	if( (ret[1] != SPI_CMD_RESET) || (ret[0] != 0x00) ) {
+//		applog(LOG_WARNING, "%d: error in reset all", cid);
+//		return 0;
+//	}
+
+	// SPI_CMD_AUTO_ADDRESS
+	ret = exec_cmd(btc08, SPI_CMD_AUTO_ADDRESS, 0x00, dummy, 32, 2);
+	if(ret[0] != SPI_CMD_AUTO_ADDRESS) {
+		applog(LOG_WARNING, "%d: error in AUTO_ADDRESS", cid);
+		return 0;
+	}
+	btc08->num_chips = ret[1];
+
+	for(ii=1; ii<=btc08->num_chips; ii++) {
+		// SPI_CMD_READ_ID
+		ret = exec_cmd(btc08, SPI_CMD_READ_ID, ii, NULL, 0, 4);
+		if(ret[3] != ii) {
+			applog(LOG_WARNING, "%d: error2 in READ_ID(%d;0x%x)", cid, ii, ii);
+			ii--;
+			break;
+		}
+	}
+	ii--;
+	btc08->num_active_chips = ii;
+
+	btc08->chips = calloc(btc08->num_active_chips, sizeof(struct btc08_chip));
+	btc08->xfr = calloc(btc08->num_active_chips+4, sizeof(struct spi_ioc_transfer)); // 2 for WRITE_TARGET, RUN_JOB
+	assert (btc08->chips != NULL);
+	assert (btc08->xfr != NULL);
+
+	for(ii=0; ii<btc08->num_active_chips; ii++) {
+		ret = exec_cmd(btc08, SPI_CMD_READ_FEATURE, ii+1, NULL, 0, 4);
+		ret32 = (uint32_t *)ret;
+		btc08->chips[ii].hash_depth = ret[3];
+		btc08->chips[ii].rev = *ret32;
+		applog(LOG_WARNING, "%d: %d chips feature=0x%08x", cid, ii+1, *ret32);
+
+//		int jj;
+//		for(jj=0; jj<MAX_JOB_ID_NUM; jj++)
+//			btc08->chips[ii].busy_job_id_flag[jj] = 0;
+
+		ret = exec_cmd(btc08, SPI_CMD_READ_REVISION, ii+1, NULL, 0, 4);
+		ret32 = (uint32_t *)ret;
+		applog(LOG_WARNING, "%d: %d chips rev=0x%08x", cid, ii+1, *ret32);
+	}
+
+	applog(LOG_WARNING, "%d: detected %d chips", cid, btc08->num_chips);
+
+	return btc08->num_chips;
+}
+
+/********** disable / re-enable related section (temporary for testing) */
+static int get_current_ms(void)
+{
+	cgtimer_t ct;
+	cgtimer_time(&ct);
+	return cgtimer_to_ms(&ct);
+}
+
+static bool is_chip_disabled(struct btc08_chain *btc08, uint8_t chip_index)
+{
+	struct btc08_chip *chip = &btc08->chips[chip_index];
+	return chip->disabled || chip->cooldown_begin != 0;
+}
+
+/* check and disable chip, remember time */
+static void disable_chip(struct btc08_chain *btc08, uint8_t chip_index)
+{
+	struct btc08_chip *chip = &btc08->chips[chip_index];
+	int cid = btc08->chain_id;
+	if (is_chip_disabled(btc08, chip_index)) {
+		applog(LOG_WARNING, "%d: chip %d already disabled",
+		       cid, chip_index);
+		return;
+	}
+	applog(LOG_WARNING, "%d: temporary disabling chip %d", cid, chip_index);
+	chip->cooldown_begin = get_current_ms();
+}
+
+static bool set_last_chip(struct btc08_chain *btc08, int last_chip)
+{
+	uint8_t *ret;
+	uint8_t dummy[32];
+	int ii, chip_id, abs_last_chip;
+
+	// if btc08->last_chip == 0, new_last_id == 3
+	//     index   = 0, 1, 2, 3, 4, 5, 6, ...
+	//     chip_id = 1, 2, 3, 4, 5, 6, 7, ...
+	// loop          1, 2, 2
+	// 
+	// if btc08->last_chip == 2, new_last_id == 3
+	//     index   = 0, 1, 2, 3, 4, 5, 6, ...
+	//     chip_id = 1, 1, 2, 3, 4, 5, 6, ...
+	// loop                2, 2, 2
+	// btc08->last_chip can be used as chip_index
+
+	for(ii=0; ii<last_chip; ii++) {
+		struct btc08_chip *chip = &btc08->chips[btc08->last_chip];
+		if(btc08->last_chip)
+			chip_id = 1;
+		else
+			chip_id = 2;
+		if(!set_control(btc08, chip_id, btc08_config_options.udiv|(1<<15))) {
+			btc08->disabled = true;
+			return false;
+		}
+
+		// SPI_CMD_AUTO_ADDRESS
+		ret = exec_cmd(btc08, SPI_CMD_AUTO_ADDRESS, 0x00, dummy, 32, 2);
+		if(ret[0] != SPI_CMD_AUTO_ADDRESS) {
+			applog(LOG_WARNING, "%d: error in AUTO_ADDRESS", btc08->chain_id);
+			btc08->disabled = true;
+			return false;
+		}
+
+		chip->disabled = true;
+		btc08->last_chip++;
+	}
+
+	btc08->num_chips = ret[1];
+
+	return true;
+}
+
+static bool reinit_chain(struct btc08_chain *btc08)
+{
+	uint8_t *ret;
+	int ii;
+	uint8_t dummy[32];
+	int chip_id;
+	struct btc08_chip *chip;
+
+	// last_chip 0
+	// chip_index 0, 1, 2, 3, 4,
+	// chip_id    1, 2, 3, 4, 5,
+	// loop       0, 1, 2, 3, 4, ...
+	//
+	// last_chip 1
+	// chip_index 0, 1, 2, 3, 4,
+	// chip_id    1, 2, 3, 4, 5,
+	// loop          2, 3, 4, 5, ...
+	//
+	// last_chip 2
+	// chip_index 0, 1, 2, 3, 4,
+	// chip_id    1, 1, 2, 3, 4,
+	// loop             2, 3, 4, ...
+	//
+	// last_chip 4
+	// chip_index 0, 1, 2, 3, 4, 5, 6,
+	// chip_id    1, 1, 1, 1, 2, 3, 4,
+	// loop                   2, 3, 4, ...
+	set_pin(btc08->pinnum_gpio_vctrl, btc08->vctrl);
+	if(btc08->last_chip) {
+		if(!set_pll_fout_en(btc08, 1, 0)) {
+			btc08->disabled = true;
+			applog(LOG_ERR, "%d: all chip_id:1 fail to set fout en to 0", btc08->chain_id);
+			return false;
+		}
+	}
+
+	for(ii=btc08->last_chip; ii<btc08->num_chips; ii++) {
+		chip = &btc08->chips[ii];
+		chip_id = ii +1;
+		if(btc08->last_chip)
+			chip_id += (1 -btc08->last_chip);
+		if (!set_pll_config(btc08, chip_id, chip->mhz)) {
+			applog(LOG_ERR, "%d: chip_id:%d(index:%d) fail to set pll(%d)", btc08->chain_id, chip_id, ii, chip->mhz);
+			btc08->disabled = true;
+			return false;
+		}
+	}
+
+	ret = cmd_RESET_BCAST(btc08);
+
+	btc08->num_cores = 0;
+	btc08->perf = 0;
+
+	cmd_BIST_BCAST(btc08, 0);
+
+	for (ii = (btc08->num_chips-1); ii>=0; ii--) {
+		if (is_chip_disabled(btc08, ii)) {
+			applog(LOG_DEBUG, "%d: %d chip disabled", btc08->chain_id, ii);
+			continue;
+		}
+		chip = &btc08->chips[ii];
+		chip_id = ii +1;
+		if(btc08->last_chip)
+			chip_id -=  -(btc08->last_chip-1);
+		check_chip(btc08, chip_id, ii);
+	}
+
+	applog(LOG_DEBUG, "perf = %ld\n", btc08->perf);
+
+	calc_nonce_range(btc08);
+
+	return true;
+}
+
+/* check if disabled chips can be re-enabled */
+static bool check_disabled_chips(struct btc08_chain *btc08)
+{
+	int i, new_last_chip = 0;
+	int cid = btc08->chain_id;
+	uint8_t *ret;
+	int chip_id;
+	int reset_flag = 0;
+	for (i = (btc08->num_chips-1); i>=0; i--) {
+		struct btc08_chip *chip = &btc08->chips[i];
+		if(chip->disabled) continue;
+		chip_id = i +1;
+		if(btc08->last_chip)
+			chip_id -=  -(btc08->last_chip-1);
+		if (!is_chip_disabled(btc08, i))
+			continue;
+//		if (chip->cooldown_begin + COOLDOWN_MS > get_current_ms())
+//			continue;
+
+		// check remain job number
+		ret = cmd_READ_ID(btc08, chip_id);
+		if(ret == NULL) {
+			reset_flag = 1;
+			chip->disabled = true;
+			btc08->num_cores -= chip->num_cores;
+			chip->num_cores = 0;
+			chip->mhz = 0;
+			chip->perf = 0;
+			new_last_chip = chip_id;
+			btc08->last_chip += i +1;
+			break;
+		}
+		else if((ret[2]&0x7)>=OON_INT_MAXJOB) {
+			reset_flag = 1;
+			if(chip->mhz > pll_sets[0].freq) {
+				chip->mhz -= 50;
+			}
+			else {
+				chip->disabled = true;
+				btc08->num_cores -= chip->num_cores;
+				chip->num_cores = 0;
+				chip->mhz = 0;
+				chip->perf = 0;
+				new_last_chip = chip_id;
+				btc08->last_chip += i +1;
+				break;
+			}
+		}
+	}
+	if(reset_flag == 0) {
+		applog(LOG_WARNING, "%d: there is no errors for timeout OON", cid);
+		return true;
+	}
+	if(new_last_chip) {
+		if(!set_last_chip(btc08, new_last_chip))
+			return false;
+	}
+	return reinit_chain(btc08);
+}
+
+/********** job creation and result evaluation */
+uint32_t get_diff(double diff)
+{
+	uint32_t n_bits;
+	int shift = 29;
+	double f = (double) 0x0000ffff / diff;
+	while (f < (double) 0x00008000) {
+		shift--;
+		f *= 256.0;
+	}
+	while (f >= (double) 0x00800000) {
+		shift++;
+		f /= 256.0;
+	}
+	n_bits = (int) f + (shift << 24);
+	return n_bits;
+}
+
+static uint8_t *create_job(uint8_t chip_id, uint8_t *job, struct work *work)
+{
+	job[0] = SPI_CMD_WRITE_PARM;
+	uint8_t *midstate = work->midstate;
+	uint8_t *wdata = work->data + 64;
+
+	uint32_t *p1 = (uint32_t *) &job[34];
+	uint32_t *p2 = (uint32_t *) wdata;
+
+	job[1] = chip_id;
+
+//	hexdump("work->data", work->data, 128);
+	memcpy(job+2, midstate, 32);
+	memcpy(job+2+32, wdata, 12);
+
+	/* p1[3] : start nonce */
+	/* p1[4] : target */
+	/* p1[5] : end nonce */
+	return job;
+}
+
+/* set work for given chip, returns true if a nonce range was finished */
+static bool set_work(struct btc08_chain *btc08, struct work *work)
+{
+	int cid = btc08->chain_id;
+	struct btc08_chip *chip;
+	bool retval = false;
+	uint8_t chip_id = btc08->num_chips-1;
+	int job_id;
+
+	chip = &btc08->chips[chip_id];
+	job_id = chip->last_queued_id + 1;
+	applog(LOG_INFO, "%d: queuing chip %d with job_id %d",
+	       cid, chip_id, job_id);
+
+	if (chip->work[chip->last_queued_id] != NULL) {
+		work_completed(btc08->cgpu, chip->work[chip->last_queued_id]);
+		chip->work[chip->last_queued_id] = NULL;
+		retval = true;
+	}
+	// the chip_id must be 0, because global job
+	uint8_t *jobdata = create_job(0, btc08->spi_ctx->txb, work);
+	if (!cmd_WRITE_JOB_fast(btc08, job_id, jobdata, work)) {
+		/* give back work */
+		work_completed(btc08->cgpu, work);
+
+		applog(LOG_ERR, "%d: failed to set work for job %d",
+		       cid, job_id);
+//		disable_chip(btc08, chip_id);
+		btc08->disabled = true;
+	} else {
+		chip->work[chip->last_queued_id] = work;
+		chip->last_queued_id++;
+		chip->last_queued_id &= JOB_ID_NUM_MASK;
+	}
+
+	int i;
+	for (i = btc08->last_chip; i < btc08->num_chips; i++) {
+		chip_id = i +1;
+		if(btc08->last_chip)
+			chip_id +=  (1-btc08->last_chip);
+		exec_cmd(btc08, SPI_CMD_READ_ID, chip_id, NULL, 0, 4);
+	}
+
+	return retval;
+}
+
+static bool set_work_test(struct btc08_chain *btc08, uint8_t chip_id, uint8_t job_id)
+{
+	int cid = btc08->chain_id;
+	bool retval = false;
+	struct work work;
+
+	uint8_t jobdata[] = {
+		0x07, 0x00, 0x4F, 0x40, 0x63, 0xF5, 0x49, 0x63, 
+		0x8D, 0x39, 0x6D, 0x6E, 0x8E, 0x43, 0xF6, 0x3F, 
+		0x8B, 0xA2, 0x65, 0xB0, 0xBA, 0xA4, 0xE3, 0xAF, 
+		0xC3, 0x50, 0x29, 0x36, 0x5A, 0x98, 0x4C, 0xF6, 
+		0x9E, 0xB7, 0x91, 0x5C, 0x88, 0x7A, 0x53, 0x6D, 
+		0xC8, 0x02, 0x19, 0x00, 0x89, 0x6C, 0x00, 0x00};
+
+	memcpy(btc08->spi_ctx->txb, jobdata, sizeof(jobdata));
+	if (!cmd_WRITE_JOB_test(btc08, job_id, btc08->spi_ctx->txb, chip_id)) {
+		retval = false;
+	} else {
+		retval = true;
+	}
+
+	return retval;
+}
+
+static bool get_nonce(struct btc08_chain *btc08, uint8_t *nonce,
+		      uint8_t *chip, uint8_t *job_id)
+{
+	uint8_t *ret;
+
+	if(get_pin(btc08->pinnum_gpio_gn) != '0') return false;
+
+	do {
+		ret = cmd_READ_RESULT_BCAST(btc08);
+		if (ret == NULL)
+			return false;
+		// unknown?
+		if ((ret[2]&0x3) == 0) {
+			applog(LOG_DEBUG, "%d: output queue empty(1)", btc08->chain_id);
+			return false;
+		}
+		uint32_t *ret32 = (uint32_t *)ret;
+		if (*ret32 == 0xffffffff) {
+	//		applog(LOG_DEBUG, "%d: output queue empty(0)", btc08->chain_id);
+			return false;
+		}
+		// oon?
+		if ((ret[2]&(1<<1)) != 0) {
+			// clear interrupt
+			applog(LOG_DEBUG, "%d: clear OON; ret:%02x %02x %02x %02x", btc08->chain_id, ret[0], ret[1], ret[2], ret[3]);
+			ret = cmd_CLEAR_OON(btc08, 0);
+			continue;
+		}
+		// golden nonce
+		if ((ret[2]&(1<<0)) != 0) {
+			uint32_t *real_nonce;
+			applog(LOG_DEBUG, "%d: GN; ret:%02x %02x %02x %02x", btc08->chain_id, ret[0], ret[1], ret[2], ret[3]);
+			applog(LOG_DEBUG, "%d: job 0x%x: golden nonce(chip%d)", btc08->chain_id, ret[1], ret[3]);
+			// clear interrupt
+			*job_id = ret[1];
+			*chip = ret[3];
+			ret = cmd_READ_RESULT(btc08, *chip);
+
+			uint32_t *ret32 = (uint32_t *)ret;
+			uint32_t *nonce32 = (uint32_t *)nonce;
+			*ret32 = bswap_32(*ret32);
+			*ret32 -= (btc08->chips[*chip-1].hash_depth*btc08->chips[*chip-1].num_cores);
+			int cid = btc08->chain_id;
+			applog(LOG_DEBUG, "%d: nonce = 0x%08x", cid, *ret32);
+
+			*nonce32 = bswap_32(*ret32);
+
+//			cmd_READ_HASH(btc08, *chip);
+
+			return true;
+		}
+	} while(true);
+
+	return false;
+}
+
+/* reset input work queues in chip chain */
+static bool abort_work(struct btc08_chain *btc08)
+{
+	bool ret;
+	int i;
+	int chip_id;
+
+	ret = cmd_RESET_BCAST(btc08);
+
+	btc08->num_cores = 0;
+	btc08->perf = 0;
+	cmd_BIST_BCAST(btc08, 0);
+
+	for (i = (btc08->num_chips-1); i>=0; i--) {
+		struct btc08_chip *chip = &btc08->chips[i];
+		if (is_chip_disabled(btc08, i)) continue;
+		chip_id = i +1;
+		if(btc08->last_chip)
+			chip_id +=  (1-btc08->last_chip);
+		check_chip(btc08, chip_id, i);
+	}
+	applog(LOG_DEBUG, "perf = %ld\n", btc08->perf);
+
+	calc_nonce_range(btc08);
+
+	return ret;
+}
+
+/********** driver interface */
+void exit_btc08_chain(struct btc08_chain *btc08)
+{
+	if (btc08 == NULL)
+		return;
+	free(btc08->chips);
+	btc08->chips = NULL;
+	btc08->spi_ctx = NULL;
+	free(btc08);
+}
+
+static int mvolt_array[2] = {400, 420};
+#define DEFAULT_HBTEST_MIN_400MV      (400-40);
+#define DEFAULT_HBTEST_MAX_400MV      (400+40);
+#define DEFAULT_HBTEST_MIN_420MV      (420-42);
+#define DEFAULT_HBTEST_MAX_420MV      (420+42);
+#define DEFAULT_HBTEST_MIN_CORES      (206-10);
+#define DEFAULT_HBTEST_FULLTEST_MSEC (2000)
+
+#define DEFAULT_HBVOLT_SETUPTIME_MSEC (500)
+
+static int hbtest_get_ref_value(char *refstr)
+{
+	int ret = 0;
+	FILE *fwfptr;
+	char cmd[128];
+
+	sprintf(cmd, "/sbin/fw_printenv | /bin/grep %s | /usr/bin/awk -F= '{print $2}'", refstr);
+
+	fwfptr = popen(cmd, "r");
+	if(fwfptr) {
+		char lenstr[16];
+		fgets(lenstr, 16, fwfptr);
+		ret = strtoul(lenstr, NULL, 0);
+		pclose(fwfptr);
+	}
+
+	return ret;
+}
+
+static int job_weight_idx = 0;
+static int hashboard_test(struct btc08_chain *btc08)
+{
+	uint8_t *ret;
+	int res = 0, i, chip_id, ii;
+	int mvolt_idx = 0, start_ms;
+
+	applog(LOG_ERR, "----------------------------------------------------------------------");
+	applog(LOG_ERR, "----------------------- hash board test mode!! -----------------------");
+	applog(LOG_ERR, "----------------------------------------------------------------------");
+	int min_mvolt_array[2];
+	int max_mvolt_array[2];
+	int min_cores, min_chips;
+	int fulltest_msec;
+	char dummy[32];
+	FILE *fwfptr;
+
+	min_mvolt_array[0] = hbtest_get_ref_value("hbtest_min_400mv");
+//	if(!min_mvolt_array[0]) min_mvolt_array[0] = DEFAULT_HBTEST_MIN_400MV;
+
+	max_mvolt_array[0] = hbtest_get_ref_value("hbtest_max_400mv");
+	if(!max_mvolt_array[0]) max_mvolt_array[0] = DEFAULT_HBTEST_MAX_400MV;
+	
+	min_mvolt_array[1] = hbtest_get_ref_value("hbtest_min_420mv");
+//	if(!min_mvolt_array[1]) min_mvolt_array[1] = DEFAULT_HBTEST_MIN_420MV;
+
+	max_mvolt_array[1] = hbtest_get_ref_value("hbtest_max_420mv");
+	if(!max_mvolt_array[1]) max_mvolt_array[1] = DEFAULT_HBTEST_MAX_420MV;
+	
+	min_cores = hbtest_get_ref_value("hbtest_min_cores");
+	if(!min_cores) min_cores = DEFAULT_HBTEST_MIN_CORES;
+	
+	min_chips = hbtest_get_ref_value("hbtest_min_chips");
+	if(!min_chips) min_chips = MAX_CHIP_NUM;
+	
+	fulltest_msec = hbtest_get_ref_value("hbtest_fulltest_msec");
+	if(!fulltest_msec) fulltest_msec = DEFAULT_HBTEST_FULLTEST_MSEC;
+	
+	applog(LOG_ERR, "--- 0.400V min adc value : %d ---", min_mvolt_array[0]);
+	applog(LOG_ERR, "--- 0.400V MAX adc value : %d ---", max_mvolt_array[0]);
+	applog(LOG_ERR, "--- 0.420V min adc value : %d ---", min_mvolt_array[1]);
+	applog(LOG_ERR, "--- 0.420V MAX adc value : %d ---", max_mvolt_array[1]);
+	applog(LOG_ERR, "--- minimum core number : %d ---", min_cores);
+	applog(LOG_ERR, "--- full load test time : %d.%03d seconds ---", fulltest_msec/1000, fulltest_msec%1000);
+
+	for(mvolt_idx = 0; mvolt_idx < 2; mvolt_idx++) {
+		cmd_RESET_BCAST(btc08);
+
+		set_pin(btc08->pinnum_gpio_vctrl, mvolt_idx);
+		sprintf(dummy, "at %d.%03dV", mvolt_array[mvolt_idx]/1000, mvolt_array[mvolt_idx]%1000);
+		cgsleep_ms(DEFAULT_HBVOLT_SETUPTIME_MSEC);
+
+		res = get_mvolt(mvolt_idx);
+		if( 
+				(res < min_mvolt_array[mvolt_idx]) || 
+				(res > max_mvolt_array[mvolt_idx]) ) {
+			applog(LOG_ERR, "power error (%dmV detected, it must be %dmV)", res, mvolt_array[mvolt_idx]);
+			res = -1;
+			return res;
+		}
+		applog(LOG_ERR, "-- test chip at %d mV --", mvolt_array[mvolt_idx]);
+
+		// SPI_CMD_AUTO_ADDRESS
+		ret = exec_cmd(btc08, SPI_CMD_AUTO_ADDRESS, 0x00, dummy, 32, 2);
+		if(ret[0] != SPI_CMD_AUTO_ADDRESS) {
+			applog(LOG_ERR, "%s: error in AUTO_ADDRESS", dummy);
+			res = -1;
+			return res;
+		}
+		btc08->num_chips = ret[1];
+		if(btc08->num_chips < min_chips) {
+			applog(LOG_ERR, "%s: chip number FAIL!!(total %d, not %d)", dummy, btc08->num_chips, min_chips);
+			res = -1;
+			return res;
+		}
+
+		for (i = 0; i<btc08->num_chips; i++) {
+			exec_cmd(btc08, SPI_CMD_READ_ID, i+1, NULL, 0, 4);
+		}
+
+		if (!set_pll_config(btc08, 0, btc08_config_options.pll)) {
+			applog(LOG_ERR, "%s: set_pll_config(%d) FAIL!!", dummy, btc08_config_options.pll);
+			res = -1;
+			return res;
+		}
+		if (!set_control(btc08, 0, btc08_config_options.udiv)) {
+			applog(LOG_ERR, "%s: set_control(%d) FAIL!!", dummy, btc08_config_options.udiv);
+			res = -1;
+			return res;
+		}
+
+		cmd_RESET_BCAST(btc08);
+		btc08->num_cores = 0;
+		btc08->perf = 0;
+		cmd_BIST_BCAST(btc08, 0);
+
+		for (i = 0; i<btc08->num_chips; i++) {
+			struct btc08_chip *chip = &btc08->chips[i];
+//			if (is_chip_disabled(btc08, i)) continue;
+			chip_id = i +1;
+			if(btc08->last_chip)
+				chip_id +=  (1-btc08->last_chip);
+			check_chip(btc08, chip_id, i);
+			if(chip->num_cores < min_cores) {
+				res = -1;
+				applog(LOG_ERR, "%s:\tchip %d has not enough cores (%d, minimum is %d)", dummy, i, chip->num_cores, min_cores);
+			}
+		}
+		if(res == -1) return res;
+
+		applog(LOG_DEBUG, "perf = %ld\n", btc08->perf);
+		calc_nonce_range(btc08);
+
+		ii = set_work_test(btc08, 0, job_weight_idx+1);
+		job_weight_idx++;
+		job_weight_idx&=3;
+		if(ii == false) {
+			applog(LOG_ERR, "%s:\tchip %d FAIL!!(in the write job)",dummy , i);
+			res = -1;
+			return res;
+		}
+		cgsleep_ms(1000);
+
+		for (i = btc08->last_chip; i < btc08->num_chips; i++) {
+			uint8_t *ret;
+
+			chip_id = i +1;
+			if(btc08->last_chip)
+				chip_id +=  (1-btc08->last_chip);
+
+#define	DEFAULT_TEST_TIMEOUT	500
+			ii =  get_current_ms();
+			do {
+				ret = exec_cmd(btc08, SPI_CMD_READ_JOB_ID, chip_id, NULL, 0, 4);
+				if (ret == NULL || ret[3] != chip_id) {
+					applog(LOG_ERR, "%s:\tchip %d  cmd_READ_JOB_ID failed", dummy, i);
+					res = -1;
+					break;;
+				}
+				if(get_current_ms() > ( ii + (DEFAULT_TEST_TIMEOUT*100))) {
+					break;
+				}
+			} while((ret[2]&2) == 0);
+
+			if(get_current_ms() > ( ii + (DEFAULT_TEST_TIMEOUT*100))) {
+				applog(LOG_ERR, "%s:\tchip %d FAIL!!(gn timeout)", dummy, i);
+				res = -1;
+				cmd_READ_RESULT(btc08, chip_id);
+				continue;
+			}
+
+			if((ret[2]&1) == 0) {
+				applog(LOG_ERR, "%s:\tchip %d(chip_id:%d) can't find golden nonce, failed", dummy, i, chip_id);
+				res = -1;
+				cmd_READ_RESULT(btc08, chip_id);
+				continue;
+			}
+
+			ii = (job_weight_idx+3)&3; // job_id
+			if (ret[0] != (ii+1)) {
+				applog(LOG_ERR, "%s:\tchip %d FAIL!!(oon job id(%d) in register)", dummy, i, ret[1]);
+				res = -1;
+				continue;
+			}
+			if (ret[1] != (ii+1)) {
+				applog(LOG_ERR, "%s:\tchip %d FAIL!!(gn job id(%d) in register)", dummy, i, ret[1]);
+				res = -1;
+				continue;
+			}
+
+			ret = cmd_READ_RESULT(btc08, chip_id);
+
+			uint32_t *ret32 = (uint32_t *)ret;
+			*ret32 = bswap_32(*ret32);
+			*ret32 -= (btc08->chips[i].hash_depth*btc08->chips[i].num_cores);
+			if(*ret32 != 0x0d473a59) {
+				applog(LOG_ERR, "%s:\tchip %d FAIL!!(nonce:0x%08x is not correct, it must be 0x0d473a59)", dummy, i, *ret32);
+				res = -1;
+				continue;
+			}
+
+			applog(LOG_ERR, "%s:\tchip %d : OK", dummy, i);
+		}
+	}
+	if(res < 0) return res;
+	btc08_config_options.test_mode = 0;
+	calc_nonce_range(btc08);
+	btc08_config_options.test_mode = 1;
+
+	start_ms = get_current_ms();
+//	set_control(btc08, 0, 1|(1<<4));	// set OON int
+	do {
+		if(get_pin(btc08->pinnum_gpio_gn) == '0') {
+			ret = cmd_READ_RESULT_BCAST(btc08);
+
+			if(ret[2]&1) {
+				chip_id = ret[3];
+				ret = cmd_READ_RESULT(btc08, chip_id);
+
+				uint32_t *ret32 = (uint32_t *)ret;
+				*ret32 = bswap_32(*ret32);
+				*ret32 -= (btc08->chips[chip_id-1].hash_depth*btc08->chips[chip_id-1].num_cores);
+				if(*ret32 != 0x0d473a59) {
+					applog(LOG_ERR, "%s:\tchip %d FAIL!!(nonce:0x%08x is not correct, it must be 0x0d473a59)", dummy, i, *ret32);
+					res = -1;
+					continue;
+				}
+			}
+		}
+
+		if(get_pin(btc08->pinnum_gpio_oon) == '0') {
+			cmd_CLEAR_OON(btc08, 0);
+			ii = set_work_test(btc08, 0, job_weight_idx+1);
+			job_weight_idx++;
+			job_weight_idx&=3;
+			if(ii == false) {
+				applog(LOG_ERR, "%s:\tfullload: FAIL!!(in the write job)",dummy);
+				res = -1;
+				break;
+			}
+		}
+
+		ii =  get_current_ms();
+	} while(get_current_ms() < (start_ms + fulltest_msec));
+
+	return res;
+}
+
+struct btc08_chain *init_btc08_chain(struct spi_ctx *ctx, int chain_id)
+{
+	int i, chip_id;
+	struct btc08_chain *btc08 = malloc(sizeof(*btc08));
+	assert(btc08 != NULL);
+
+	applog(LOG_DEBUG, "%d: BTC08 init chain", chain_id);
+	memset(btc08, 0, sizeof(*btc08));
+	btc08->spi_ctx = ctx;
+	btc08->chain_id = chain_id;
+
+	for(i=0; i<MAX_SPI_PORT; i++)
+		if(ctx->config.bus == spi_available_bus[i]) break;
+	btc08->pinnum_gpio_gn    =    gn_pin[i];
+	btc08->pinnum_gpio_oon   =   oon_pin[i];
+	btc08->pinnum_gpio_vctrl = vctrl_pin[i];
+	btc08->pinnum_gpio_reset = reset_pin[i];
+	btc08->volt_ch = adc_ch[i];
+	// TODO get volt from config file
+	btc08->vctrl = btc08->vctrl == 0? 0 : 1;
+
+	btc08->num_chips = chain_detect(btc08);
+	if (btc08->num_chips == 0)
+		goto failure;
+
+	if(((btc08->chips[btc08->num_chips-1].rev>>16)&0xf) != 0x0) {
+		if (btc08->num_chips < btc08_config_options.min_chips) {
+			applog(LOG_ERR, "%d: failed to get enough chips(%d; it must be over than %d)", chain_id, btc08->num_chips, btc08_config_options.min_chips);
+			goto failure;
+		}
+	}
+
+	applog(LOG_WARNING, "spidev%d.%d: %d: Found %d BTC08 chips",
+	       btc08->spi_ctx->config.bus, btc08->spi_ctx->config.cs_line,
+	       btc08->chain_id, btc08->num_chips);
+
+	set_pin(btc08->pinnum_gpio_vctrl, btc08->vctrl);	// set to 0.4V
+	if (!set_pll_config(btc08, 0, btc08_config_options.pll))
+		goto failure;
+	if (!set_control(btc08, 0, btc08_config_options.udiv))
+		goto failure;
+
+	cmd_RESET_BCAST(btc08);
+	btc08->num_cores = 0;
+	btc08->perf = 0;
+	cmd_BIST_BCAST(btc08, 0);
+
+	for (i = (btc08->num_chips-1); i>=0; i--) {
+		struct btc08_chip *chip = &btc08->chips[i];
+		if (is_chip_disabled(btc08, i)) continue;
+		chip_id = i +1;
+		if(btc08->last_chip)
+			chip_id +=  (1-btc08->last_chip);
+		check_chip(btc08, chip_id, i);
+	}
+
+	applog(LOG_DEBUG, "perf = %ld\n", btc08->perf);
+	calc_nonce_range(btc08);
+	if(btc08_config_options.test_mode == 1) {
+		if(hashboard_test(btc08)<0) {
+			applog(LOG_ERR, "TEST FAIL");
+
+			system("echo timer > /sys/class/leds/red/trigger");
+			system("echo 300 > /sys/class/leds/red/delay_on");
+			system("echo 300 > /sys/class/leds/red/delay_off");
+			system("echo timer > /sys/class/leds/green/trigger");
+			system("echo 300 > /sys/class/leds/green/delay_on");
+			system("echo 0 > /sys/class/leds/green/delay_off");
+		}
+		else {
+			applog(LOG_ERR, "TEST OK");
+			system("echo timer > /sys/class/leds/red/trigger");
+			system("echo 300 > /sys/class/leds/red/delay_on");
+			system("echo 0 > /sys/class/leds/red/delay_off");
+			system("echo timer > /sys/class/leds/green/trigger");
+			system("echo 300 > /sys/class/leds/green/delay_on");
+			system("echo 300 > /sys/class/leds/green/delay_off");
+		}
+		reset_gpio(btc08, 0);
+		while(1) cgsleep_ms(2000);
+	}
+
+	applog(LOG_WARNING, "%d: found %d chips with total %d active cores",
+	       btc08->chain_id, btc08->num_active_chips, btc08->num_cores);
+
+	mutex_init(&btc08->lock);
+	INIT_LIST_HEAD(&btc08->active_wq.head);
+
+	return btc08;
+
+failure:
+	exit_btc08_chain(btc08);
+	return NULL;
+}
+
+static bool detect_single_chain(struct spi_ctx *ctx, int idx)
+{
+//	board_selector = (struct board_selector*)&dummy_board_selector;
+	applog(LOG_WARNING, "BTC08: checking single chain");
+	struct btc08_chain *btc08 = init_btc08_chain(ctx, idx);
+	if (btc08 == NULL)
+		return false;
+
+	struct cgpu_info *cgpu = malloc(sizeof(*cgpu));
+	assert(cgpu != NULL);
+
+	memset(cgpu, 0, sizeof(*cgpu));
+	cgpu->drv = &btc08_drv;
+	cgpu->name = "BTC08.SingleChain";
+	cgpu->threads = 1;
+
+	cgpu->device_data = btc08;
+
+	btc08->cgpu = cgpu;
+	add_cgpu(cgpu);
+	applog(LOG_WARNING, "Detected single BTC08 chain with %d chips / %d cores",
+	       btc08->num_active_chips, btc08->num_cores);
+	return true;
+}
+
+/* Probe SPI channel and register chip chain */
+void btc08_detect(bool hotplug)
+{
+	int ii;
+	int fd_gpio;
+
+	/* no hotplug support for SPI */
+	if (hotplug)
+		return;
+
+	fd_gpio = open("/sys/class/gpio/gpio127/value", O_WRONLY);
+	write(fd_gpio, "0", 2);	// reset
+	cgsleep_us(1000);
+	write(fd_gpio, "1", 2);	// reset
+	close(fd_gpio);
+
+	fd_gpio = open("/sys/class/gpio/gpio132/value", O_WRONLY);
+	write(fd_gpio, "0", 2);	// reset
+	cgsleep_us(1000);
+	write(fd_gpio, "1", 2);	// reset
+	close(fd_gpio);
+
+	/* parse btc08-options */
+	if (opt_btc08_options != NULL && parsed_config_options == NULL) {
+		int spi_clk = 0;
+		int sys_clk_mhz = 0;
+		int udiv = 0;
+
+		sscanf(opt_btc08_options, "%d:%d:%d",
+		       &spi_clk, &sys_clk_mhz, &udiv);
+		if (spi_clk != 0)
+			btc08_config_options.spi_clk_khz = spi_clk;
+		if (sys_clk_mhz != 0)
+			btc08_config_options.pll = sys_clk_mhz;
+		if (udiv != 0)
+			btc08_config_options.udiv = udiv;
+
+		/* config options are global, scan them once */
+		parsed_config_options = &btc08_config_options;
+	}
+	if (opt_btc08_min_cores != NULL) {
+		int min_cores;
+		sscanf(opt_btc08_min_cores, "%d", &min_cores);
+		btc08_config_options.min_cores = min_cores;
+	}
+	if (opt_btc08_min_chips != NULL) {
+		int min_chips;
+		sscanf(opt_btc08_min_chips, "%d", &min_chips);
+		btc08_config_options.min_chips = min_chips;
+	}
+	btc08_config_options.test_mode = 0;
+	if (opt_btc08_chiptest != NULL)
+		btc08_config_options.test_mode = 1;
+	if (get_pin(15) == '0')
+		btc08_config_options.test_mode = 1;
+
+	applog(LOG_DEBUG, "BTC08 detect");
+
+	/* register global SPI context */
+	struct spi_config cfg = default_spi_config;
+	for(ii=0; ii<MAX_SPI_PORT; ii++) {
+//		if(get_pin(plug_pin[ii]) != '1') continue;
+		cfg.mode = SPI_MODE_0;
+		cfg.speed = btc08_config_options.spi_clk_khz * 1000;
+		cfg.bus = spi_available_bus[ii];
+		spi[ii] = spi_init(&cfg);
+		if (spi[ii] == NULL)
+			return;
+
+		if (detect_single_chain(spi[ii], ii) == false)
+			/* release SPI context if no BTC08 products found */
+			spi_exit(spi[ii]);
+	}
+}
+
+static int64_t btc08_scanwork(struct thr_info *thr)
+{
+	int i;
+	struct cgpu_info *cgpu = thr->cgpu;
+	struct btc08_chain *btc08 = cgpu->device_data;
+	int32_t nonce_ranges_processed = 0;
+
+	if (btc08->num_cores == 0) {
+		cgpu->deven = DEV_DISABLED;
+		reinit_chain(btc08);
+		return 0;
+	}
+	if (btc08->disabled) {
+		cgpu->deven = DEV_DISABLED;
+		reinit_chain(btc08);
+		return 0;
+	}
+//	board_selector->select(btc08->chain_id);
+
+//	applog(LOG_DEBUG, "BTC08 running scanwork");
+
+	uint32_t nonce;
+	uint8_t chip_id;
+	uint8_t job_id;
+	bool work_updated = false;
+
+	mutex_lock(&btc08->lock);
+
+	if (btc08->last_temp_time + TEMP_UPDATE_INT_MS < get_current_ms()) {
+		btc08->high_temp_val = 0;
+		btc08->high_temp_id = -1;
+		for (i = btc08->last_chip; i < btc08->num_chips; i++) {
+			chip_id = i +1;
+			if(btc08->last_chip)
+				chip_id += (1 -btc08->last_chip);
+
+			btc08->temp[i] = cmd_READ_TEMP(btc08, chip_id);
+			if(btc08->temp[i] > btc08->high_temp_val) {
+				btc08->high_temp_val = btc08->temp[i];
+				btc08->high_temp_id = i;
+			}
+		}
+		cgpu->hot_temp = btc08->high_temp_val;
+		cgpu->hot_id   = btc08->high_temp_id ;
+
+		btc08->last_temp_time = get_current_ms();
+
+		btc08->mvolt = get_mvolt(btc08->volt_ch);
+	}
+	int cid = btc08->chain_id;
+	/* poll queued results */
+	while (true) {
+		if (!get_nonce(btc08, (uint8_t*)&nonce, &chip_id, &job_id))
+			break;
+		work_updated = true;
+		if (chip_id < 1 || chip_id > btc08->num_active_chips) {
+			applog(LOG_WARNING, "%d: wrong chip_id %d",
+			       cid, chip_id);
+			continue;
+		}
+		if (job_id < 1 && job_id > MAX_JOB_ID_NUM) {
+			applog(LOG_WARNING, "%d: chip %d: result has wrong "
+			       "job_id %d", cid, chip_id, job_id);
+			flush_spi(btc08);
+			continue;
+		}
+
+		struct btc08_chip *chip = &btc08->chips[btc08->num_chips-1];
+		struct work *work = chip->work[job_id - 1];
+		chip = &btc08->chips[chip_id - 1];
+		if (work == NULL) {
+			/* already been flushed => stale */
+			applog(LOG_WARNING, "%d: chip %d: stale nonce 0x%08x",
+			       cid, chip_id, nonce);
+			chip->stales++;
+			continue;
+		}
+		if (!submit_nonce(thr, work, nonce)) {
+			applog(LOG_WARNING, "%d: chip %d: invalid nonce 0x%08x",
+			       cid, chip_id, nonce);
+			chip->hw_errors++;
+			/* add a penalty of a full nonce range on HW errors */
+			nonce_ranges_processed--;
+			continue;
+		}
+		applog(LOG_DEBUG, "YEAH: %d: chip %d / job_id %d: nonce 0x%08x",
+		       cid, chip_id, job_id, nonce);
+		chip->nonces_found++;
+	}
+
+	/* check for completed works */
+	for (i = 0; i<2; i++) {
+		if(get_pin(btc08->pinnum_gpio_oon) == '1') {
+			if(btc08->oon_begin) {
+//				applog(LOG_DEBUG, "%d: cur:%d > %d?", cid, get_current_ms(), (btc08->oon_begin + TIME_LIMIT_OF_OON));
+				if (get_current_ms() > (btc08->oon_begin + TIME_LIMIT_OF_OON)) {
+					check_disabled_chips(btc08);
+					break;
+				}
+				else continue;
+			}
+			else
+				btc08->oon_begin = get_current_ms();
+			break;
+		}
+
+		btc08->oon_begin = 0;
+
+		work_updated = true;
+
+		struct work *work = wq_dequeue(&btc08->active_wq);
+		if (work == NULL) {
+			applog(LOG_INFO, "%d: work underflow",
+				   cid);
+			break;
+		}
+		if (set_work(btc08, work)) {
+//			chip->nonce_ranges_done++;
+			nonce_ranges_processed++;
+		}
+		applog(LOG_DEBUG, "%d: job done ",
+			   cid
+//			   chip->nonce_ranges_done, chip->nonces_found,
+//			   chip->hw_errors, chip->stales
+			   );
+	}
+
+	mutex_unlock(&btc08->lock);
+
+//	board_selector->release();
+
+	if (nonce_ranges_processed < 0)
+		nonce_ranges_processed = 0;
+
+	if (nonce_ranges_processed != 0) {
+		applog(LOG_DEBUG, "%d, nonces processed %d",
+		       cid, nonce_ranges_processed);
+	}
+	/* in case of no progress, prevent busy looping */
+//	if (!work_updated)
+//		cgsleep_us(40);
+
+	return (int64_t)nonce_ranges_processed << 32;
+}
+
+
+/* queue two work items per chip in chain */
+static bool btc08_queue_full(struct cgpu_info *cgpu)
+{
+	struct btc08_chain *btc08 = cgpu->device_data;
+	int queue_full = false;
+
+	mutex_lock(&btc08->lock);
+//	applog(LOG_DEBUG, "%d, BTC08 running queue_full: %d/%d",
+//	       btc08->chain_id, btc08->active_wq.num_elems, btc08->num_active_chips);
+
+	if (btc08->active_wq.num_elems >= btc08->num_active_chips * 2)
+		queue_full = true;
+	else
+		wq_enqueue(&btc08->active_wq, get_queued(cgpu));
+
+	mutex_unlock(&btc08->lock);
+
+	return queue_full;
+}
+
+static void btc08_flush_work(struct cgpu_info *cgpu)
+{
+	struct btc08_chain *btc08 = cgpu->device_data;
+	int cid = btc08->chain_id;
+//	board_selector->select(cid);
+
+	applog(LOG_DEBUG, "%d: BTC08 running flushwork", cid);
+
+	int i;
+
+	mutex_lock(&btc08->lock);
+	/* stop chips hashing current work */
+	if (!abort_work(btc08)) {
+		applog(LOG_ERR, "%d: failed to abort work in chip chain!", cid);
+	}
+	/* flush the work chips were currently hashing */
+	for (i = btc08->last_chip; i < btc08->num_chips; i++) {
+		int j;
+		struct btc08_chip *chip = &btc08->chips[i];
+		for (j = 0; j < MAX_JOB_ID_NUM; j++) {
+			struct work *work = chip->work[j];
+			if (work == NULL)
+				continue;
+			applog(LOG_DEBUG, "%d: flushing chip %d, work %d: 0x%p",
+			       cid, i, j + 1, work);
+			work_completed(cgpu, work);
+			chip->work[j] = NULL;
+//			btc08->chips[i].busy_job_id_flag[j] = 0;
+		}
+		chip->last_queued_id = 0;
+	}
+	/* flush queued work */
+	applog(LOG_DEBUG, "%d: flushing queued work...", cid);
+	while (btc08->active_wq.num_elems > 0) {
+		struct work *work = wq_dequeue(&btc08->active_wq);
+		assert(work != NULL);
+		work_completed(cgpu, work);
+	}
+	btc08->sdiff = 0;
+	mutex_unlock(&btc08->lock);
+
+//	board_selector->release();
+}
+
+static void btc08_get_statline_before(char *buf, size_t len,
+				   struct cgpu_info *cgpu)
+{
+	struct btc08_chain *btc08 = cgpu->device_data;
+	char temp[10];
+	if (btc08->temp != 0)
+		snprintf(temp, 9, "%2dC", btc08->temp[0]);
+	tailsprintf(buf, len, " %2d:%2d/%3d %s",
+		    btc08->chain_id, btc08->num_active_chips, btc08->num_cores,
+		    btc08->temp[0] == 0 ? "   " : temp);
+}
+
+static struct api_data *btc08_api_stats(struct cgpu_info *cgpu)
+{
+       struct api_data *root = NULL;
+       struct btc08_chain *btc08 = cgpu->device_data;
+
+       root = api_add_int(root, "chain_id", &(btc08->chain_id), false);
+
+       root = api_add_int(root, "asic_count", &(btc08->num_chips), false);
+
+       btc08->volt_f = (float)btc08->mvolt/1000.0;
+       root = api_add_volts(root, "volt", &(btc08->volt_f), false);
+
+       btc08->high_temp_val_f = (float)btc08->high_temp_val;
+       root = api_add_temp(root, "hi_temp", &(btc08->high_temp_val_f), false);
+
+       root = api_add_int(root, "hot_chip", &(btc08->high_temp_id), false);
+
+       root = api_add_int(root, "chain_id_end", &(btc08->chain_id), false);
+
+       return root;
+}
+
+struct device_drv btc08_drv = {
+	.drv_id = DRIVER_btc08,
+	.dname = "BTC08",
+	.name = "BTC08",
+	.drv_detect = btc08_detect,
+
+	.hash_work = hash_queued_work,
+	.scanwork = btc08_scanwork,
+	.queue_full = btc08_queue_full,
+	.flush_work = btc08_flush_work,
+	.get_api_stats = btc08_api_stats,
+	.get_statline_before = btc08_get_statline_before,
+};

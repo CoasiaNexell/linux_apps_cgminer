@@ -99,6 +99,11 @@ if HAS_BITFURY
 cgminer_SOURCES += driver-bitfury.c driver-bitfury.h
 endif
 
+if HAS_BTC08
+cgminer_SOURCES += driver-SPI-btc08.c btc08-common.h
+cgminer_SOURCES += spi-context.c spi-context.h
+endif
+
 if HAS_BITFURY16
 cgminer_SOURCES += bf16-bitfury16.c bf16-bitfury16.h
 cgminer_SOURCES += bf16-brd-control.c bf16-brd-control.h

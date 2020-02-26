@@ -254,6 +254,7 @@ static inline int fsync (int fd)
 	DRIVER_ADD_COMMAND(bflsc) \
 	DRIVER_ADD_COMMAND(bitfury) \
 	DRIVER_ADD_COMMAND(bitfury16) \
+	DRIVER_ADD_COMMAND(btc08) \
 	DRIVER_ADD_COMMAND(bitmineA1) \
 	DRIVER_ADD_COMMAND(blockerupter) \
 	DRIVER_ADD_COMMAND(cointerra) \
@@ -509,6 +510,10 @@ struct cgpu_info {
 	bool new_work;
 
 	double temp;
+#ifdef USE_BTC08
+	int hot_temp;
+	int hot_id;
+#endif
 #ifdef USE_DRAGONMINT_T1
 	double temp_max;
 	double temp_min;
@@ -1035,6 +1040,12 @@ extern bool opt_worktime;
 #ifdef USE_AVALON
 extern char *opt_avalon_options;
 extern char *opt_bitburner_fury_options;
+#endif
+#ifdef USE_BTC08
+extern char *opt_btc08_options;
+extern char *opt_btc08_min_cores;
+extern char *opt_btc08_min_chips;
+extern char *opt_btc08_chiptest;
 #endif
 #ifdef USE_KLONDIKE
 extern char *opt_klondike_options;

@@ -285,6 +285,12 @@ char *opt_drillbit_options = NULL;
 char *opt_drillbit_auto = NULL;
 #endif
 char *opt_bab_options = NULL;
+#ifdef USE_BTC08
+char *opt_btc08_options = NULL;
+char *opt_btc08_min_cores = NULL;
+char *opt_btc08_min_chips = NULL;
+char *opt_btc08_chiptest = NULL;
+#endif
 #ifdef USE_BITMINE_A1
 char *opt_bitmine_a1_options = NULL;
 #endif
@@ -1624,6 +1630,20 @@ static struct opt_table opt_config_table[] = {
 	OPT_WITH_ARG("--bitmine-a1-options",
 		     opt_set_charp, NULL, &opt_bitmine_a1_options,
 		     "Bitmine A1 options ref_clk_khz:sys_clk_khz:spi_clk_khz:override_chip_num"),
+#endif
+#ifdef USE_BTC08
+	OPT_WITH_ARG("--btc08-options",
+			opt_set_charp, NULL, &opt_btc08_options,
+			"BTC08 options spi_clk_khz:sys_clk_mhz:uart_divider"),
+	OPT_WITH_ARG("--btc08-min-cores",
+			opt_set_charp, NULL, &opt_btc08_min_cores,
+			"BTC08 options minimum cores"),
+	OPT_WITH_ARG("--btc08-min-chips",
+			opt_set_charp, NULL, &opt_btc08_min_chips,
+			"BTC08 options minimum cores"),
+	OPT_WITH_ARG("--btc08-chiptest",
+			opt_set_charp, NULL, &opt_btc08_chiptest,
+			"BTC08 options flag of chip test"),
 #endif
 #ifdef USE_BITFURY
 	OPT_WITH_ARG("--bxf-bits",
