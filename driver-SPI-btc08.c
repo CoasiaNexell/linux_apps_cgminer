@@ -27,9 +27,9 @@ static struct spi_ctx *spi[MAX_SPI_PORT];
 static int spi_available_bus[MAX_SPI_PORT] = {0, 2};
 static int vctrl_pin[MAX_SPI_PORT] = {20, 9};
 static int plug_pin[MAX_SPI_PORT] = {24, 11};
-static int reset_pin[MAX_SPI_PORT] = {127, 132};
-static int gn_pin[MAX_SPI_PORT] = {126, 131};
-static int oon_pin[MAX_SPI_PORT] = {125, 130};
+static int reset_pin[MAX_SPI_PORT] = {66, 66};
+static int gn_pin[MAX_SPI_PORT] = {65, 65};
+static int oon_pin[MAX_SPI_PORT] = {113, 113};
 static int adc_ch[MAX_SPI_PORT] = {0, 1};
 static int spi_idx = 0;
 
@@ -128,6 +128,8 @@ static uint8_t get_pin(int pin)
 
 	close(fd);
 
+//	applog(LOG_DEBUG, "%s: pin %d, val 0x%02x", __FUNCTION__, pin, (uint8_t)ret );
+
 	return (uint8_t)ret;
 }
 
@@ -146,6 +148,8 @@ static uint8_t set_pin(int pin, int val)
 	write(fd, &ret, 1);
 
 	close(fd);
+
+	applog(LOG_DEBUG, "%s: pin %d, val 0x%02x", __FUNCTION__, pin, (uint8_t)ret );
 
 	return (uint8_t)ret;
 }
@@ -219,6 +223,7 @@ static void hexdump_error(char *prefix, uint8_t *buff, int len)
 /********** temporary helper for hexdumping SPI traffic */
 static void flush_spi(struct btc08_chain *btc08)
 {
+	int ii;
 	memset(btc08->spi_tx, 0, 64);
 	bool ret;
 	ret = spi_transfer(btc08->spi_ctx, btc08->spi_tx, btc08->spi_rx, 64);
@@ -228,6 +233,7 @@ static void flush_spi(struct btc08_chain *btc08)
 	}
 	else
 		btc08->disabled = false;
+	for(ii=0; ii<64; ii++) btc08->spi_rx[ii] ^= 0xff;
 	applog(LOG_DEBUG, "%d: %s()", btc08->chain_id, __func__);
 	hexdump("send: TX", btc08->spi_tx, 64);
 	hexdump("send: RX", btc08->spi_rx, 64);
@@ -249,6 +255,7 @@ static uint8_t *exec_cmd(struct btc08_chain *btc08,
 		memcpy(btc08->spi_tx + 2, data, len);
 
 	assert(ret = spi_transfer(btc08->spi_ctx, btc08->spi_tx, btc08->spi_rx, tx_len));
+	for(ii=0; ii<tx_len; ii++) btc08->spi_rx[ii] ^= 0xff;
 	if(ret == false) {
 		btc08->disabled = true;
 		applog(LOG_ERR, "%d: %s() error", btc08->chain_id, __func__);
@@ -262,10 +269,10 @@ static uint8_t *exec_cmd(struct btc08_chain *btc08,
 		hexdump("send: RX", btc08->spi_rx, tx_len);
 //	}
 
-	if(resp_len) {
-		for(ii=2+len; ii<(2+len+resp_len); ii++)
-			btc08->spi_rx[ii] ^= 0xff;
-	}
+//	if(resp_len) {
+//		for(ii=2+len; ii<(2+len+resp_len); ii++)
+//			btc08->spi_rx[ii] ^= 0xff;
+//	}
 
 
 	return (btc08->spi_rx + 2 + len);
@@ -350,6 +357,8 @@ static uint8_t golden_disable[256/8] = {
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
 #endif
+
+#if 0
 static uint8_t golden_nonce[(32+32)/8] = {
 	0x99, 0x62, 0xe3, 0x01, 0x99, 0x62, 0xe3, 0x01
 };
@@ -372,6 +381,55 @@ static uint8_t golden_param[(256+96+16)/8] = {
 
 static uint8_t golden_target[6] = {
 	0x1d, 0x00, 0xff, 0xff, 0x06, 0x10
+};
+#endif
+
+static uint8_t golden_param[WRITE_JOB_LENGTH] = {
+	0x5f, 0x4d, 0x60, 0xa2, 0x53, 0x85, 0xc4, 0x07, 
+	0xc2, 0xa8, 0x4e, 0x0c, 0x25, 0x91, 0x69, 0xc4, 
+	0x10, 0xa4, 0xa5, 0x4b, 0x93, 0xf7, 0x17, 0x08, 
+	0xf1, 0xab, 0xdf, 0xec, 0x6e, 0x8b, 0x81, 0xd2,
+
+	0xf4, 0x2a, 0x1d, 0x6e, 0x5b, 0x30, 0x70, 0x7e, 
+	0x17, 0x37, 0x6f, 0x56,
+
+	0x5f, 0x4d, 0x60, 0xa2, 0x53, 0x85, 0xc4, 0x07, 
+	0xc2, 0xa8, 0x4e, 0x0c, 0x25, 0x91, 0x69, 0xc4, 
+	0x10, 0xa4, 0xa5, 0x4b, 0x93, 0xf7, 0x17, 0x08, 
+	0xf1, 0xab, 0xdf, 0xec, 0x6e, 0x8b, 0x81, 0xd2,
+
+	0x5f, 0x4d, 0x60, 0xa2, 0x53, 0x85, 0xc4, 0x07, 
+	0xc2, 0xa8, 0x4e, 0x0c, 0x25, 0x91, 0x69, 0xc4, 
+	0x10, 0xa4, 0xa5, 0x4b, 0x93, 0xf7, 0x17, 0x08, 
+	0xf1, 0xab, 0xdf, 0xec, 0x6e, 0x8b, 0x81, 0xd2
+};
+
+static uint8_t golden_nonce[(32+32)/8] = {
+	0x66, 0xcb, 0x34, 0x26, 0x66, 0xcb, 0x34, 0x26
+};
+
+#define BIST_HASH_LEN (1024/8)
+static uint8_t golden_hash[BIST_HASH_LEN] = {
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
+	0x00, 0x22, 0x09, 0x3d, 0xd4, 0x38, 0xed, 0x47, 
+	0xfa, 0x28, 0xe7, 0x18, 0x58, 0xb8, 0x22, 0x0d, 
+	0x53, 0xe5, 0xcd, 0x83, 0xb8, 0xd0, 0xd4, 0x42,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
+	0x00, 0x22, 0x09, 0x3d, 0xd4, 0x38, 0xed, 0x47, 
+	0xfa, 0x28, 0xe7, 0x18, 0x58, 0xb8, 0x22, 0x0d, 
+	0x53, 0xe5, 0xcd, 0x83, 0xb8, 0xd0, 0xd4, 0x42,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
+	0x00, 0x22, 0x09, 0x3d, 0xd4, 0x38, 0xed, 0x47, 
+	0xfa, 0x28, 0xe7, 0x18, 0x58, 0xb8, 0x22, 0x0d, 
+	0x53, 0xe5, 0xcd, 0x83, 0xb8, 0xd0, 0xd4, 0x42,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
+	0x00, 0x22, 0x09, 0x3d, 0xd4, 0x38, 0xed, 0x47, 
+	0xfa, 0x28, 0xe7, 0x18, 0x58, 0xb8, 0x22, 0x0d, 
+	0x53, 0xe5, 0xcd, 0x83, 0xb8, 0xd0, 0xd4, 0x42
+};
+
+static uint8_t golden_target[6] = {
+	0x17, 0x37, 0x6f, 0x56, 0x05, 0x00
 };
 
 static uint8_t golden_disable[256/8] = {
@@ -409,7 +467,7 @@ static uint8_t *cmd_BIST_BCAST(struct btc08_chain *btc08, uint8_t chip_id)
 //		return NULL;
 //	}
 
-	ret = exec_cmd(btc08, SPI_CMD_RUN_BIST, chip_id, golden_hash, 256/8, 2);
+	ret = exec_cmd(btc08, SPI_CMD_RUN_BIST, chip_id, golden_hash, BIST_HASH_LEN, 2);
 //	if (ret == NULL || ret[0] != SPI_CMD_RUN_BIST) {
 //		applog(LOG_ERR, "%d: SPI_CMD_RUN_BIST failed", btc08->chain_id);
 //		return NULL;
@@ -430,13 +488,13 @@ static uint8_t *cmd_RESET_BCAST(struct btc08_chain *btc08)
 
 static uint8_t *cmd_READ_RESULT_BCAST(struct btc08_chain *btc08)
 {
-	int tx_len = 6+2;
+	int tx_len = 6+2, ii;
 	bool ret;
 	memset(btc08->spi_tx, 0, tx_len);
 	btc08->spi_tx[0] = SPI_CMD_READ_JOB_ID;
 
-	int ii;
 	assert(ret = spi_transfer(btc08->spi_ctx, btc08->spi_tx, btc08->spi_rx, tx_len));
+	for(ii=0; ii<tx_len; ii++) btc08->spi_rx[ii] ^= 0xff;
 //	if((btc08->spi_rx[2] != 0xff) &&
 //		(btc08->spi_rx[3] != 0xff) &&
 //		(btc08->spi_rx[4] != 0xff) &&
@@ -453,25 +511,20 @@ static uint8_t *cmd_READ_RESULT_BCAST(struct btc08_chain *btc08)
 	else
 		btc08->disabled = false;
 
-	uint8_t *scan = btc08->spi_rx;
-	scan+=2;
-
-	scan[0] ^= 0xff;
-	scan[1] ^= 0xff;
-	scan[2] ^= 0xff;
-	scan[3] ^= 0xff;
-
-	return scan;
+	return &(btc08->spi_rx[2]);
 }
+
+#define READ_RESULT_LEN (144/8)
 static uint8_t *cmd_READ_RESULT(struct btc08_chain *btc08, uint8_t chip_id)
 {
-	int tx_len = ALIGN(6, 4);
+	int tx_len = ALIGN(READ_RESULT_LEN+2, 4), ii;
 	bool ret;
 	memset(btc08->spi_tx, 0, tx_len);
 	btc08->spi_tx[0] = SPI_CMD_READ_RESULT;
 	btc08->spi_tx[1] = chip_id;
 
 	assert(ret = spi_transfer(btc08->spi_ctx, btc08->spi_tx, btc08->spi_rx, tx_len));
+	for(ii=0; ii<tx_len; ii++) btc08->spi_rx[ii] ^= 0xff;
 	if(ret == false) {
 		btc08->disabled = true;
 		applog(LOG_ERR, "%d: %s() error", btc08->chain_id, __func__);
@@ -481,23 +534,20 @@ static uint8_t *cmd_READ_RESULT(struct btc08_chain *btc08, uint8_t chip_id)
 
 	hexdump("send: TX", btc08->spi_tx, tx_len);
 	hexdump("send: RX", btc08->spi_rx, tx_len);
-	btc08->spi_rx[2] ^= 0xff;
-	btc08->spi_rx[3] ^= 0xff;
-	btc08->spi_rx[4] ^= 0xff;
-	btc08->spi_rx[5] ^= 0xff;
 
 	return &(btc08->spi_rx[2]);
 }
 
 static uint8_t *cmd_CLEAR_OON(struct btc08_chain *btc08, uint8_t chip_id)
 {
-	int tx_len = ALIGN(4, 4);
+	int tx_len = ALIGN(4, 4), ii;
 	bool ret;
 	memset(btc08->spi_tx, 0, tx_len);
 	btc08->spi_tx[0] = SPI_CMD_CLEAR_OON;
 	btc08->spi_tx[1] = chip_id;
 
 	assert(ret = spi_transfer_x20(btc08->spi_ctx, btc08->spi_tx, btc08->spi_rx, tx_len));
+	for(ii=0; ii<tx_len; ii++) btc08->spi_rx[ii] ^= 0xff;
 	hexdump("send: TX", btc08->spi_tx, tx_len);
 	hexdump("send: RX", btc08->spi_rx, tx_len);
 	if(ret == false) {
@@ -510,15 +560,17 @@ static uint8_t *cmd_CLEAR_OON(struct btc08_chain *btc08, uint8_t chip_id)
 	return &(btc08->spi_rx[2]);
 }
 
+#define READ_HASH_LEN (1024/8)
 static uint8_t *cmd_READ_HASH(struct btc08_chain *btc08, uint8_t chip_id)
 {
-	int tx_len = ALIGN(2+32, 4), ii;
+	int tx_len = ALIGN(2+READ_HASH_LEN, 4), ii;
 	bool ret;
 	memset(btc08->spi_tx, 0, tx_len);
 	btc08->spi_tx[0] = SPI_CMD_READ_HASH;
 	btc08->spi_tx[1] = chip_id;
 
 	assert(ret = spi_transfer(btc08->spi_ctx, btc08->spi_tx, btc08->spi_rx, tx_len));
+	for(ii=0; ii<tx_len; ii++) btc08->spi_rx[ii] ^= 0xff;
 	hexdump("send: TX", btc08->spi_tx, tx_len);
 	hexdump("send: RX", btc08->spi_rx, tx_len);
 	if(ret == false) {
@@ -528,8 +580,8 @@ static uint8_t *cmd_READ_HASH(struct btc08_chain *btc08, uint8_t chip_id)
 	else
 		btc08->disabled = false;
 
-	for(ii=2; ii<(32+2); ii++)
-		btc08->spi_rx[ii] ^= 0xff;
+//	for(ii=2; ii<(32+2); ii++)
+//		btc08->spi_rx[ii] ^= 0xff;
 	return &(btc08->spi_rx[2]);
 }
 
@@ -678,9 +730,14 @@ static uint8_t cmd_WRITE_JOB_fast(struct btc08_chain *btc08,
 	xfr[0].tx_buf = (unsigned long)spi_tx;
 	xfr[0].rx_buf = (unsigned long)NULL;
 	xfr[0].len = tx_len;
+#if !defined(FPGA)
 	xfr[0].speed_hz = btc08->spi_ctx->config.speed*20;
+#else
+	xfr[0].speed_hz = btc08->spi_ctx->config.speed*2;
+#endif
 	xfr[0].delay_usecs = btc08->spi_ctx->config.delay;
 	xfr[0].bits_per_word = btc08->spi_ctx->config.bits;
+	xfr[0].cs_change = 1;
 	xfr[0].tx_nbits = 0;
 	xfr[0].rx_nbits = 0;
 	xfr[0].pad = 0;
@@ -695,9 +752,14 @@ static uint8_t cmd_WRITE_JOB_fast(struct btc08_chain *btc08,
 	xfr[1].tx_buf = (unsigned long)spi_tx;
 	xfr[1].rx_buf = (unsigned long)NULL;
 	xfr[1].len = tx_len;
+#if !defined(FPGA)
 	xfr[1].speed_hz = btc08->spi_ctx->config.speed*20;
+#else
+	xfr[1].speed_hz = btc08->spi_ctx->config.speed*2;
+#endif
 	xfr[1].delay_usecs = btc08->spi_ctx->config.delay;
 	xfr[1].bits_per_word = btc08->spi_ctx->config.bits;
+	xfr[1].cs_change = 1;
 	xfr[1].tx_nbits = 0;
 	xfr[1].rx_nbits = 0;
 	xfr[1].pad = 0;
@@ -730,9 +792,14 @@ static uint8_t cmd_WRITE_JOB_fast(struct btc08_chain *btc08,
 		xfr[ii].tx_buf = (unsigned long)spi_tx;
 		xfr[ii].rx_buf = (unsigned long)NULL;
 		xfr[ii].len = tx_len;
+#if !defined(FPGA)
 		xfr[ii].speed_hz = btc08->spi_ctx->config.speed*20;
+#else
+		xfr[ii].speed_hz = btc08->spi_ctx->config.speed*2;
+#endif
 		xfr[ii].delay_usecs = btc08->spi_ctx->config.delay;
 		xfr[ii].bits_per_word = btc08->spi_ctx->config.bits;
+		xfr[ii].cs_change = 1;
 		xfr[ii].tx_nbits = 0;
 		xfr[ii].rx_nbits = 0;
 		xfr[ii].pad = 0;
@@ -742,18 +809,25 @@ static uint8_t cmd_WRITE_JOB_fast(struct btc08_chain *btc08,
 	}
 
 	// RUN_JOB
-	tx_len = 5;
+	tx_len = 6;
 	spi_tx[0] = SPI_CMD_RUN_JOB;
 	spi_tx[1] = 0;
 	spi_tx[2] = 0;
+	if (work->pool->vmask)
+		spi_tx[2] |= 2;
 	spi_tx[3] = job_id;
 	hexdump("send: TX", spi_tx, tx_len);
 	xfr[ii].tx_buf = (unsigned long)spi_tx;
 	xfr[ii].rx_buf = (unsigned long)NULL;
 	xfr[ii].len = tx_len;
+#if !defined(FPGA)
 	xfr[ii].speed_hz = btc08->spi_ctx->config.speed*20;
+#else
+	xfr[ii].speed_hz = btc08->spi_ctx->config.speed*2;
+#endif
 	xfr[ii].delay_usecs = btc08->spi_ctx->config.delay;
 	xfr[ii].bits_per_word = btc08->spi_ctx->config.bits;
+	xfr[ii].cs_change = 1;
 	xfr[ii].tx_nbits = 0;
 	xfr[ii].rx_nbits = 0;
 	xfr[ii].pad = 0;
@@ -773,6 +847,7 @@ static uint8_t cmd_WRITE_JOB_fast(struct btc08_chain *btc08,
 
 static uint8_t cmd_READ_TEMP(struct btc08_chain *btc08, uint8_t chip_id)
 {
+#if !defined(FPGA)
 	uint8_t *ret;
 	if(((btc08->chips[btc08->num_chips-1].rev>>16)&0xf) == 0x0) return 30; // for FPGA, there is no temperature sensor in FPGA, so 30 is just a value for testing
 	ret = exec_cmd(btc08, SPI_CMD_READ_TEMP, chip_id, NULL, 0, 2);
@@ -782,6 +857,9 @@ static uint8_t cmd_READ_TEMP(struct btc08_chain *btc08, uint8_t chip_id)
 		return 0;
 	}
 	return ret[1];
+#else
+	return 80;
+#endif
 }
 
 /********** btc08 low level functions */
@@ -789,6 +867,7 @@ static uint8_t cmd_READ_TEMP(struct btc08_chain *btc08, uint8_t chip_id)
 #define PLL_CYCLE_WAIT_TIME 40
 static bool check_chip_pll_lock(struct btc08_chain *btc08, int chip_id)
 {
+#if !defined(FPGA)
 	int n;
 	int cid = btc08->chain_id;
 	uint8_t *ret;
@@ -809,6 +888,12 @@ static bool check_chip_pll_lock(struct btc08_chain *btc08, int chip_id)
 	}
 	applog(LOG_ERR, "%d: chip %d failed PLL lock", cid, chip_id);
 	return false;
+#else
+	int cid = btc08->chain_id;
+	applog(LOG_WARNING, "%d: PLL locked %d(0x%x)CHIP", cid, chip_id, chip_id);
+	return true;
+
+#endif
 }
 
 struct pll_conf {
@@ -894,6 +979,7 @@ static bool set_pll_config(struct btc08_chain *btc08, int chip_id, int pll)
 		chip_index += (btc08->last_chip-1);
 
 	if(((btc08->chips[btc08->num_chips-1].rev>>16)&0xf) == 0x0) {
+		btc08->timeout_oon = TIME_LIMIT_OF_OON_FPGA;
 		if(chip_id) {
 			btc08->chips[chip_index].mhz = 100;
 			applog(LOG_WARNING, "%d: chip%d: skip PLL because FPGA", cid, chip_index);
@@ -906,6 +992,7 @@ static bool set_pll_config(struct btc08_chain *btc08, int chip_id, int pll)
 	}
 	else {
 		int pll_idx;
+		btc08->timeout_oon = TIME_LIMIT_OF_OON;
 		pll_idx = get_pll_idx(pll);
 
 		if(pll_idx < 0) {
@@ -1003,7 +1090,7 @@ static bool check_chip(struct btc08_chain *btc08, int chip_id, int chip_index)
 
 	btc08->num_cores += btc08->chips[chip_index].num_cores;
 	btc08->chips[chip_index].perf = btc08->chips[chip_index].num_cores*btc08->chips[chip_index].mhz;
-	applog(LOG_DEBUG, "%d: chip %d perf = %ld\n", cid, chip_id, btc08->chips[chip_index].perf);
+	applog(LOG_DEBUG, "%d: chip %d perf = %ld (%ld MHz)\n", cid, chip_id, btc08->chips[chip_index].perf, btc08->chips[chip_index].mhz);
 	btc08->perf += btc08->chips[chip_index].perf;
 
 	return true;
@@ -1050,6 +1137,7 @@ static bool calc_nonce_range(struct btc08_chain *btc08)
 		spi_tx[10] = 0;
 
 		ret = spi_transfer(btc08->spi_ctx, btc08->spi_tx, btc08->spi_rx, 12);
+		for(int i=0; i<12; i++) btc08->spi_rx[i] ^= 0xff;
 		hexdump("send: TX", btc08->spi_tx, 12);
 		hexdump("send: RX", btc08->spi_rx, 12);
 		if(ret == false) {
@@ -1080,6 +1168,60 @@ static void reset_gpio(struct btc08_chain *btc08, int on)
 	close(fd_gpio);
 }
 
+static int test_spi_seq(struct btc08_chain *btc08)
+{
+	int ii=0, spi_len0, spi_len1, spi_len2, ret = 0;
+	bool retb;
+	/* ensure we push the SPI command to the last chip in chain */
+	uint8_t spi_tx_b[128], spi_rx_b[128];
+	uint8_t *spi_tx = spi_tx_b, *spi_rx = spi_rx_b;
+	struct spi_ioc_transfer *xfr = btc08->xfr;
+
+	int tx_len;
+
+	tx_len = ALIGN(8, 4);
+	for(ii=0; ii<3; ii++) {
+		memset(spi_tx, 0, tx_len);
+		memset(spi_rx, 0, tx_len);
+		spi_tx[0] = SPI_CMD_READ_REVISION;
+		spi_tx[1] = (ii%3) + 1;
+		hexdump("send: TX", spi_tx, tx_len);
+		xfr[ii].tx_buf = (unsigned long)spi_tx;
+		xfr[ii].rx_buf = (unsigned long)spi_rx;
+		xfr[ii].len = tx_len;
+#if !defined(FPGA)
+		xfr[ii].speed_hz = btc08->spi_ctx->config.speed*20;
+#else
+		xfr[ii].speed_hz = btc08->spi_ctx->config.speed*2;
+#endif
+		xfr[ii].delay_usecs = btc08->spi_ctx->config.delay;
+		xfr[ii].bits_per_word = btc08->spi_ctx->config.bits;
+		xfr[ii].cs_change = 1;
+		xfr[ii].tx_nbits = 0;
+		xfr[ii].rx_nbits = 0;
+		xfr[ii].pad = 0;
+		spi_tx += tx_len;
+		spi_rx += tx_len;
+	}
+
+	assert(retb = spi_transfer_x20_a(btc08->spi_ctx, btc08->xfr, ii));
+	if(retb == false) {
+		btc08->disabled = true;
+		applog(LOG_ERR, "%d: %s() error", btc08->chain_id, __func__);
+	}
+	else
+		btc08->disabled = false;
+
+	for(ii=0; ii<3; ii++) {
+		int jj;
+		spi_rx = (uint8_t *)xfr[ii].rx_buf;
+		for(jj=0; jj<tx_len; jj++)
+			spi_rx[jj] ^= 0xff;
+		hexdump("send: RX", spi_rx, tx_len);
+	}
+
+	return true;
+}
 /*
  * RUN_BIST works only once after HW reset, on subsequent calls it
  * returns 0 as number of chips.
@@ -1123,6 +1265,8 @@ static int chain_detect(struct btc08_chain *btc08)
 	btc08->xfr = calloc(btc08->num_active_chips+4, sizeof(struct spi_ioc_transfer)); // 2 for WRITE_TARGET, RUN_JOB
 	assert (btc08->chips != NULL);
 	assert (btc08->xfr != NULL);
+
+	test_spi_seq(btc08);
 
 	for(ii=0; ii<btc08->num_active_chips; ii++) {
 		ret = exec_cmd(btc08, SPI_CMD_READ_FEATURE, ii+1, NULL, 0, 4);
@@ -1302,7 +1446,7 @@ static bool check_disabled_chips(struct btc08_chain *btc08)
 	int reset_flag = 0;
 	for (i = (btc08->num_chips-1); i>=0; i--) {
 		struct btc08_chip *chip = &btc08->chips[i];
-		if(chip->disabled) continue;
+//		if(chip->disabled) continue;
 		chip_id = i +1;
 		if(btc08->last_chip)
 			chip_id -=  -(btc08->last_chip-1);
@@ -1375,19 +1519,21 @@ static uint8_t *create_job(uint8_t chip_id, uint8_t *job, struct work *work)
 	job[0] = SPI_CMD_WRITE_PARM;
 	uint8_t *midstate = work->midstate;
 	uint8_t *wdata = work->data + 64;
+	uint8_t *midstate1 = work->midstate1;
+	uint8_t *midstate2 = work->midstate2;
+	uint8_t *midstate3 = work->midstate3;
 
 	uint32_t *p1 = (uint32_t *) &job[34];
 	uint32_t *p2 = (uint32_t *) wdata;
 
 	job[1] = chip_id;
 
-//	hexdump("work->data", work->data, 128);
 	memcpy(job+2, midstate, 32);
 	memcpy(job+2+32, wdata, 12);
+	memcpy(job+2+32+12, midstate1, 32);
+	memcpy(job+2+32+12+32, midstate2, 32);
+	memcpy(job+2+32+12+32+32, midstate3, 32);
 
-	/* p1[3] : start nonce */
-	/* p1[4] : target */
-	/* p1[5] : end nonce */
 	return job;
 }
 
@@ -1426,6 +1572,8 @@ static bool set_work(struct btc08_chain *btc08, struct work *work)
 		chip->last_queued_id &= JOB_ID_NUM_MASK;
 	}
 
+#if 0
+	// for debugging?
 	int i;
 	for (i = btc08->last_chip; i < btc08->num_chips; i++) {
 		chip_id = i +1;
@@ -1433,6 +1581,7 @@ static bool set_work(struct btc08_chain *btc08, struct work *work)
 			chip_id +=  (1-btc08->last_chip);
 		exec_cmd(btc08, SPI_CMD_READ_ID, chip_id, NULL, 0, 4);
 	}
+#endif
 
 	return retval;
 }
@@ -1462,7 +1611,7 @@ static bool set_work_test(struct btc08_chain *btc08, uint8_t chip_id, uint8_t jo
 }
 
 static bool get_nonce(struct btc08_chain *btc08, uint8_t *nonce,
-		      uint8_t *chip, uint8_t *job_id)
+		      uint8_t *chip, uint8_t *job_id, uint8_t *micro_job_id)
 {
 	uint8_t *ret;
 
@@ -1472,8 +1621,7 @@ static bool get_nonce(struct btc08_chain *btc08, uint8_t *nonce,
 		ret = cmd_READ_RESULT_BCAST(btc08);
 		if (ret == NULL)
 			return false;
-		// unknown?
-		if ((ret[2]&0x3) == 0) {
+		if ((ret[2]&3) == 0) {
 			applog(LOG_DEBUG, "%d: output queue empty(1)", btc08->chain_id);
 			return false;
 		}
@@ -1499,14 +1647,19 @@ static bool get_nonce(struct btc08_chain *btc08, uint8_t *nonce,
 			*chip = ret[3];
 			ret = cmd_READ_RESULT(btc08, *chip);
 
-			uint32_t *ret32 = (uint32_t *)ret;
-			uint32_t *nonce32 = (uint32_t *)nonce;
-			*ret32 = bswap_32(*ret32);
-			*ret32 -= (btc08->chips[*chip-1].hash_depth*btc08->chips[*chip-1].num_cores);
-			int cid = btc08->chain_id;
-			applog(LOG_DEBUG, "%d: nonce = 0x%08x", cid, *ret32);
+			*micro_job_id = ret[17];
 
-			*nonce32 = bswap_32(*ret32);
+			int ii;
+			for(ii=0; ii<4; ii++, ret+=4, nonce+=4) {
+				uint32_t *ret32 = (uint32_t *)ret;
+				uint32_t *nonce32 = (uint32_t *)nonce;
+				*ret32 = bswap_32(*ret32);
+				//*ret32 -= (btc08->chips[*chip-1].hash_depth*btc08->chips[*chip-1].num_cores);
+				*nonce32 = bswap_32(*ret32);
+			}
+			int cid = btc08->chain_id;
+			uint32_t *nonce32 = (uint32_t *)nonce;
+			applog(LOG_DEBUG, "%d: nonce = 0x%08x, 0x%08x, 0x%08x, 0x%08x", cid, nonce32[0], nonce32[1], nonce32[2], nonce32[3]);
 
 //			cmd_READ_HASH(btc08, *chip);
 
@@ -1943,17 +2096,17 @@ void btc08_detect(bool hotplug)
 	if (hotplug)
 		return;
 
-	fd_gpio = open("/sys/class/gpio/gpio127/value", O_WRONLY);
-	write(fd_gpio, "0", 2);	// reset
+	// reset
+	set_pin(66, 0);
 	cgsleep_us(1000);
-	write(fd_gpio, "1", 2);	// reset
-	close(fd_gpio);
+	set_pin(66, 1);
 
-	fd_gpio = open("/sys/class/gpio/gpio132/value", O_WRONLY);
-	write(fd_gpio, "0", 2);	// reset
-	cgsleep_us(1000);
-	write(fd_gpio, "1", 2);	// reset
-	close(fd_gpio);
+	//
+//	fd_gpio = open("/sys/class/gpio/gpio132/value", O_WRONLY);
+//	write(fd_gpio, "0", 2);	// reset
+//	cgsleep_us(1000);
+//	write(fd_gpio, "1", 2);	// reset
+//	close(fd_gpio);
 
 	/* parse btc08-options */
 	if (opt_btc08_options != NULL && parsed_config_options == NULL) {
@@ -1993,7 +2146,9 @@ void btc08_detect(bool hotplug)
 
 	/* register global SPI context */
 	struct spi_config cfg = default_spi_config;
-	for(ii=0; ii<MAX_SPI_PORT; ii++) {
+//	for(ii=0; ii<MAX_SPI_PORT; ii++) 
+	ii = 0;
+	{
 //		if(get_pin(plug_pin[ii]) != '1') continue;
 		cfg.mode = SPI_MODE_0;
 		cfg.speed = btc08_config_options.spi_clk_khz * 1000;
@@ -2010,7 +2165,7 @@ void btc08_detect(bool hotplug)
 
 static int64_t btc08_scanwork(struct thr_info *thr)
 {
-	int i;
+	int i, ii;
 	struct cgpu_info *cgpu = thr->cgpu;
 	struct btc08_chain *btc08 = cgpu->device_data;
 	int32_t nonce_ranges_processed = 0;
@@ -2029,13 +2184,15 @@ static int64_t btc08_scanwork(struct thr_info *thr)
 
 //	applog(LOG_DEBUG, "BTC08 running scanwork");
 
-	uint32_t nonce;
+	uint32_t nonce[4];
 	uint8_t chip_id;
 	uint8_t job_id;
+	uint8_t micro_job_id;
 	bool work_updated = false;
 
 	mutex_lock(&btc08->lock);
 
+#if !defined(FPGA)
 	if (btc08->last_temp_time + TEMP_UPDATE_INT_MS < get_current_ms()) {
 		btc08->high_temp_val = 0;
 		btc08->high_temp_id = -1;
@@ -2057,10 +2214,11 @@ static int64_t btc08_scanwork(struct thr_info *thr)
 
 		btc08->mvolt = get_mvolt(btc08->volt_ch);
 	}
+#endif
 	int cid = btc08->chain_id;
 	/* poll queued results */
 	while (true) {
-		if (!get_nonce(btc08, (uint8_t*)&nonce, &chip_id, &job_id))
+		if (!get_nonce(btc08, (uint8_t*)&nonce[0], &chip_id, &job_id, &micro_job_id))
 			break;
 		work_updated = true;
 		if (chip_id < 1 || chip_id > btc08->num_active_chips) {
@@ -2080,41 +2238,48 @@ static int64_t btc08_scanwork(struct thr_info *thr)
 		chip = &btc08->chips[chip_id - 1];
 		if (work == NULL) {
 			/* already been flushed => stale */
-			applog(LOG_WARNING, "%d: chip %d: stale nonce 0x%08x",
-			       cid, chip_id, nonce);
+			applog(LOG_WARNING, "%d: chip %d: stale nonce 0x%08x 0x%08x 0x%08x 0x%08x",
+			       cid, chip_id, nonce[0], nonce[1], nonce[2], nonce[3]);
 			chip->stales++;
 			continue;
 		}
-		if (!submit_nonce(thr, work, nonce)) {
-			applog(LOG_WARNING, "%d: chip %d: invalid nonce 0x%08x",
-			       cid, chip_id, nonce);
-			chip->hw_errors++;
-			/* add a penalty of a full nonce range on HW errors */
-			nonce_ranges_processed--;
-			continue;
+		for(ii=0; ii<4; ii++) {
+			if((micro_job_id & (1<<ii)) != 0) {
+				work->micro_job_id = (1<<ii);
+				memcpy(work->data, &(work->pool->vmask_001[(1<<ii)]), 4);
+				if (!submit_nonce(thr, work, nonce[ii])) {
+					applog(LOG_WARNING, "%d: chip %d: invalid nonce 0x%08x",
+						   cid, chip_id, nonce[ii]);
+					chip->hw_errors++;
+					/* add a penalty of a full nonce range on HW errors */
+					nonce_ranges_processed--;
+					continue;
+				}
+				applog(LOG_DEBUG, "YEAH: %d: chip %d / job_id %d: nonce 0x%08x",
+					   cid, chip_id, job_id, nonce[ii]);
+				chip->nonces_found++;
+			}
 		}
-		applog(LOG_DEBUG, "YEAH: %d: chip %d / job_id %d: nonce 0x%08x",
-		       cid, chip_id, job_id, nonce);
-		chip->nonces_found++;
 	}
 
 	/* check for completed works */
 	for (i = 0; i<2; i++) {
 		if(get_pin(btc08->pinnum_gpio_oon) == '1') {
-			if(btc08->oon_begin) {
-//				applog(LOG_DEBUG, "%d: cur:%d > %d?", cid, get_current_ms(), (btc08->oon_begin + TIME_LIMIT_OF_OON));
-				if (get_current_ms() > (btc08->oon_begin + TIME_LIMIT_OF_OON)) {
-					check_disabled_chips(btc08);
-					break;
-				}
-				else continue;
+			cgtimer_t ts_now, ts_diff;
+			cgsleep_ms(500);
+			cgtimer_time(&ts_now);
+			cgtimer_sub(&ts_now, &btc08->oon_begin, &ts_diff);
+			if (cgtimer_to_ms(&ts_diff) > btc08->timeout_oon) {
+				applog(LOG_DEBUG, "start: %ld, now: %ld, diff: %ld", cgtimer_to_ms(&btc08->oon_begin), cgtimer_to_ms(&ts_now), cgtimer_to_ms(&ts_diff));
+				check_disabled_chips(btc08);
+				break;
 			}
-			else
-				btc08->oon_begin = get_current_ms();
-			break;
+			else continue;
 		}
 
-		btc08->oon_begin = 0;
+		cgtimer_time(&btc08->oon_begin);
+
+		applog(LOG_DEBUG, "cid %d: job fifo not full ", cid);
 
 		work_updated = true;
 

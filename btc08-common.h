@@ -19,7 +19,7 @@ struct work_queue {
 #define ALIGN(x, a) (((x) + (a) - 1) & ~((a) - 1))
 /********** chip and chain context structures */
 /* the WRITE_JOB command is the largest (2 bytes command, 56 bytes payload) */
-#define WRITE_JOB_LENGTH	((256+96)/8)//(midstate + data)
+#define WRITE_JOB_LENGTH	((256+96+256+256)/8)//(midstate + data + midstate + midstate)
 #define MAX_CHAIN_LENGTH	256
 /*
  * For commands to traverse the chain, we need to issue dummy writes to
@@ -27,9 +27,11 @@ struct work_queue {
  * write the command, followed by chain-length words to pass it through the
  * chain and another chain-length words to get the ACK back to host
  */
-#define MAX_CMD_LENGTH		(360/8+16/8)	// param + command
+#define MAX_CMD_LENGTH		(1024)	// param + command
 
 #define	TIME_LIMIT_OF_OON	4000	/* mili seconds */
+#define	TIME_LIMIT_OF_OON_FPGA	120000	/* mili seconds */
+
 #define OON_INT_MAXJOB	2
 
 #define TEMP_UPDATE_INT_MS	2000
@@ -102,7 +104,8 @@ struct btc08_chain {
 	int mvolt;
 	float volt_f;
 	int last_chip;
-	int oon_begin;
+	int timeout_oon;
+	cgtimer_t oon_begin;
 };
 
 #define MAX_SPI_PORT	2

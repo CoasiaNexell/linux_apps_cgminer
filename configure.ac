@@ -293,6 +293,7 @@ AC_ARG_ENABLE([btc08],
 	)
 if test "x$btc08" = xyes; then
 	AC_DEFINE([USE_BTC08], [1], [Defined to 1 if BTC08 support is wanted])
+	AC_DEFINE([USE_VMASK], [1], [Defined to 1 if version mask rolling is wanted])
 	drivercount=x$drivercount
 	standalone="yes"
 fi

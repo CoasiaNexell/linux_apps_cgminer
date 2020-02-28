@@ -92,7 +92,7 @@ extern bool spi_transfer(struct spi_ctx *ctx, uint8_t *txbuf,
 	xfr.speed_hz = ctx->config.speed;
 	xfr.delay_usecs = ctx->config.delay;
 	xfr.bits_per_word = ctx->config.bits;
-	xfr.cs_change = 0;
+	xfr.cs_change = 1;
 	xfr.tx_nbits = 0;
 	xfr.rx_nbits = 0;
 	xfr.pad = 0;
