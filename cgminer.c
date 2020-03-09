@@ -7944,13 +7944,69 @@ static bool new_nonce(struct thr_info *thr, uint32_t nonce)
 	return true;
 }
 
+static inline void _flip76(void *dest_p, const void *src_p)
+{
+	uint32_t *dest = dest_p;
+	const uint32_t *src = src_p;
+	int i;
+
+	for (i = 0; i < 19; i++)
+		dest[i] = swab32(src[i]);
+}
+
 /* Returns true if nonce for work was a valid share and not a dupe of the very last
  * nonce submitted by this device. */
 bool submit_nonce(struct thr_info *thr, struct work *work, uint32_t nonce)
 {
-	if (new_nonce(thr, nonce) && test_nonce(work, nonce))
+	if (new_nonce(thr, nonce) && test_nonce(work, nonce)) {
+#if 0
+		// This is for debug
+		{
+			unsigned char header_swap[128];
+			char *header_str;
+
+			//swab256(header_swap, work->data);
+			_flip76(header_swap, work->data);
+			header_str = bin2hex(header_swap, 128);
+			applog(LOG_DEBUG, "header : %s", header_str);
+		}
+#endif
 		submit_tested_work(thr, work);
+	}
 	else {
+
+#if 0
+		// This is for debug
+		{
+			unsigned char hash_swap[32], target_swap[32], header_swap[128];
+			char *hash_str, *target_str, *header_str;
+
+			applog(LOG_DEBUG, "header : %s", header_str);
+			//swab256(header_swap, work->data);
+			_flip76(header_swap, work->data);
+			header_str = bin2hex(header_swap, 128);
+			applog(LOG_DEBUG, "header : %s", header_str);
+
+			swab256(target_swap, work->target);
+			target_str = bin2hex(target_swap, 32);
+			applog(LOG_DEBUG, "target : %s", target_str);
+
+			swab256(hash_swap, work->hash);
+			hash_str = bin2hex(hash_swap, 32);
+			applog(LOG_DEBUG, "hash?  : %s", hash_str);
+
+			rebuild_nonce(work, nonce +1);
+			swab256(hash_swap, work->hash);
+			hash_str = bin2hex(hash_swap, 32);
+			applog(LOG_DEBUG, "hash(+1) : %s", hash_str);
+
+			rebuild_nonce(work, nonce -1);
+			swab256(hash_swap, work->hash);
+			hash_str = bin2hex(hash_swap, 32);
+			applog(LOG_DEBUG, "hash(-1) : %s", hash_str);
+		}
+#endif
+
 		inc_hw_errors(thr);
 		return false;
 	}

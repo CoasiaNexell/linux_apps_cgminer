@@ -19,7 +19,7 @@ struct work_queue {
 #define ALIGN(x, a) (((x) + (a) - 1) & ~((a) - 1))
 /********** chip and chain context structures */
 /* the WRITE_JOB command is the largest (2 bytes command, 56 bytes payload) */
-#define WRITE_JOB_LENGTH	((256+96+256+256)/8)//(midstate + data + midstate + midstate)
+#define WRITE_JOB_LENGTH	((256+96+256+256+256)/8)//(midstate + data + midstate + midstate)
 #define MAX_CHAIN_LENGTH	256
 /*
  * For commands to traverse the chain, we need to issue dummy writes to
