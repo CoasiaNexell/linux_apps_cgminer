@@ -33,6 +33,7 @@
  */
 
 #include <string.h>
+#include <arm_neon.h>
 
 #include "sha2.h"
 
@@ -148,6 +149,292 @@ void sha256_init(sha256_ctx *ctx)
     ctx->tot_len = 0;
 }
 
+#ifdef USE_CRYPTO_EXT
+static __attribute__ ((target("+crypto")))
+void SHA256_Transform(uint32_t state[8], const uint8_t data[64], uint32_t W[64],
+                 uint32_t S[8])
+{
+	uint32x4_t STATE0, STATE1, ABEF_SAVE, CDGH_SAVE;
+	uint32x4_t MSG0, MSG1, MSG2, MSG3;
+	uint32x4_t TMP0, TMP1, TMP2;
+
+	/* Hack for single block */
+	unsigned int length = 64;
+
+	/* Load state */
+	STATE0 = vld1q_u32(&state[0]);
+	STATE1 = vld1q_u32(&state[4]);
+
+	while (length >= 64)
+	{
+		/* Save state */
+		ABEF_SAVE = STATE0;
+		CDGH_SAVE = STATE1;
+
+		/* Load message */
+		MSG0 = vld1q_u32((const uint32_t *)(data +  0));
+		MSG1 = vld1q_u32((const uint32_t *)(data + 16));
+		MSG2 = vld1q_u32((const uint32_t *)(data + 32));
+		MSG3 = vld1q_u32((const uint32_t *)(data + 48));
+
+		/* Reverse for little endian */
+		MSG0 = vreinterpretq_u32_u8(vrev32q_u8(vreinterpretq_u8_u32(MSG0)));
+		MSG1 = vreinterpretq_u32_u8(vrev32q_u8(vreinterpretq_u8_u32(MSG1)));
+		MSG2 = vreinterpretq_u32_u8(vrev32q_u8(vreinterpretq_u8_u32(MSG2)));
+		MSG3 = vreinterpretq_u32_u8(vrev32q_u8(vreinterpretq_u8_u32(MSG3)));
+
+		TMP0 = vaddq_u32(MSG0, vld1q_u32(&sha256_k[0x00]));
+
+		/* Rounds 0-3 */
+		MSG0 = vsha256su0q_u32(MSG0, MSG1);
+		TMP2 = STATE0;
+		TMP1 = vaddq_u32(MSG1, vld1q_u32(&sha256_k[0x04]));
+		STATE0 = vsha256hq_u32(STATE0, STATE1, TMP0);
+		STATE1 = vsha256h2q_u32(STATE1, TMP2, TMP0);
+		MSG0 = vsha256su1q_u32(MSG0, MSG2, MSG3);
+
+		/* Rounds 4-7 */
+		MSG1 = vsha256su0q_u32(MSG1, MSG2);
+		TMP2 = STATE0;
+		TMP0 = vaddq_u32(MSG2, vld1q_u32(&sha256_k[0x08]));
+		STATE0 = vsha256hq_u32(STATE0, STATE1, TMP1);
+		STATE1 = vsha256h2q_u32(STATE1, TMP2, TMP1);
+		MSG1 = vsha256su1q_u32(MSG1, MSG3, MSG0);
+
+		/* Rounds 8-11 */
+		MSG2 = vsha256su0q_u32(MSG2, MSG3);
+		TMP2 = STATE0;
+		TMP1 = vaddq_u32(MSG3, vld1q_u32(&sha256_k[0x0c]));
+		STATE0 = vsha256hq_u32(STATE0, STATE1, TMP0);
+		STATE1 = vsha256h2q_u32(STATE1, TMP2, TMP0);
+		MSG2 = vsha256su1q_u32(MSG2, MSG0, MSG1);
+
+		/* Rounds 12-15 */
+		MSG3 = vsha256su0q_u32(MSG3, MSG0);
+		TMP2 = STATE0;
+		TMP0 = vaddq_u32(MSG0, vld1q_u32(&sha256_k[0x10]));
+		STATE0 = vsha256hq_u32(STATE0, STATE1, TMP1);
+		STATE1 = vsha256h2q_u32(STATE1, TMP2, TMP1);
+		MSG3 = vsha256su1q_u32(MSG3, MSG1, MSG2);
+
+		/* Rounds 16-19 */
+		MSG0 = vsha256su0q_u32(MSG0, MSG1);
+		TMP2 = STATE0;
+		TMP1 = vaddq_u32(MSG1, vld1q_u32(&sha256_k[0x14]));
+		STATE0 = vsha256hq_u32(STATE0, STATE1, TMP0);
+		STATE1 = vsha256h2q_u32(STATE1, TMP2, TMP0);
+		MSG0 = vsha256su1q_u32(MSG0, MSG2, MSG3);
+
+		/* Rounds 20-23 */
+		MSG1 = vsha256su0q_u32(MSG1, MSG2);
+		TMP2 = STATE0;
+		TMP0 = vaddq_u32(MSG2, vld1q_u32(&sha256_k[0x18]));
+		STATE0 = vsha256hq_u32(STATE0, STATE1, TMP1);
+		STATE1 = vsha256h2q_u32(STATE1, TMP2, TMP1);
+		MSG1 = vsha256su1q_u32(MSG1, MSG3, MSG0);
+
+		/* Rounds 24-27 */
+		MSG2 = vsha256su0q_u32(MSG2, MSG3);
+		TMP2 = STATE0;
+		TMP1 = vaddq_u32(MSG3, vld1q_u32(&sha256_k[0x1c]));
+		STATE0 = vsha256hq_u32(STATE0, STATE1, TMP0);
+		STATE1 = vsha256h2q_u32(STATE1, TMP2, TMP0);
+		MSG2 = vsha256su1q_u32(MSG2, MSG0, MSG1);
+
+		/* Rounds 28-31 */
+		MSG3 = vsha256su0q_u32(MSG3, MSG0);
+		TMP2 = STATE0;
+		TMP0 = vaddq_u32(MSG0, vld1q_u32(&sha256_k[0x20]));
+		STATE0 = vsha256hq_u32(STATE0, STATE1, TMP1);
+		STATE1 = vsha256h2q_u32(STATE1, TMP2, TMP1);
+		MSG3 = vsha256su1q_u32(MSG3, MSG1, MSG2);
+
+		/* Rounds 32-35 */
+		MSG0 = vsha256su0q_u32(MSG0, MSG1);
+		TMP2 = STATE0;
+		TMP1 = vaddq_u32(MSG1, vld1q_u32(&sha256_k[0x24]));
+		STATE0 = vsha256hq_u32(STATE0, STATE1, TMP0);
+		STATE1 = vsha256h2q_u32(STATE1, TMP2, TMP0);
+		MSG0 = vsha256su1q_u32(MSG0, MSG2, MSG3);
+
+		/* Rounds 36-39 */
+		MSG1 = vsha256su0q_u32(MSG1, MSG2);
+		TMP2 = STATE0;
+		TMP0 = vaddq_u32(MSG2, vld1q_u32(&sha256_k[0x28]));
+		STATE0 = vsha256hq_u32(STATE0, STATE1, TMP1);
+		STATE1 = vsha256h2q_u32(STATE1, TMP2, TMP1);
+		MSG1 = vsha256su1q_u32(MSG1, MSG3, MSG0);
+
+		/* Rounds 40-43 */
+		MSG2 = vsha256su0q_u32(MSG2, MSG3);
+		TMP2 = STATE0;
+		TMP1 = vaddq_u32(MSG3, vld1q_u32(&sha256_k[0x2c]));
+		STATE0 = vsha256hq_u32(STATE0, STATE1, TMP0);
+		STATE1 = vsha256h2q_u32(STATE1, TMP2, TMP0);
+		MSG2 = vsha256su1q_u32(MSG2, MSG0, MSG1);
+
+		/* Rounds 44-47 */
+		MSG3 = vsha256su0q_u32(MSG3, MSG0);
+		TMP2 = STATE0;
+		TMP0 = vaddq_u32(MSG0, vld1q_u32(&sha256_k[0x30]));
+		STATE0 = vsha256hq_u32(STATE0, STATE1, TMP1);
+		STATE1 = vsha256h2q_u32(STATE1, TMP2, TMP1);
+		MSG3 = vsha256su1q_u32(MSG3, MSG1, MSG2);
+
+		/* Rounds 48-51 */
+		TMP2 = STATE0;
+		TMP1 = vaddq_u32(MSG1, vld1q_u32(&sha256_k[0x34]));
+		STATE0 = vsha256hq_u32(STATE0, STATE1, TMP0);
+		STATE1 = vsha256h2q_u32(STATE1, TMP2, TMP0);
+
+		/* Rounds 52-55 */
+		TMP2 = STATE0;
+		TMP0 = vaddq_u32(MSG2, vld1q_u32(&sha256_k[0x38]));
+		STATE0 = vsha256hq_u32(STATE0, STATE1, TMP1);
+		STATE1 = vsha256h2q_u32(STATE1, TMP2, TMP1);
+
+		/* Rounds 56-59 */
+		TMP2 = STATE0;
+		TMP1 = vaddq_u32(MSG3, vld1q_u32(&sha256_k[0x3c]));
+		STATE0 = vsha256hq_u32(STATE0, STATE1, TMP0);
+		STATE1 = vsha256h2q_u32(STATE1, TMP2, TMP0);
+
+		/* Rounds 60-63 */
+		TMP2 = STATE0;
+		STATE0 = vsha256hq_u32(STATE0, STATE1, TMP1);
+		STATE1 = vsha256h2q_u32(STATE1, TMP2, TMP1);
+
+		/* Combine state */
+		STATE0 = vaddq_u32(STATE0, ABEF_SAVE);
+		STATE1 = vaddq_u32(STATE1, CDGH_SAVE);
+
+		data += 64;
+		length -= 64;
+	}
+
+	/* Save state */
+	vst1q_u32(&state[0], STATE0);
+	vst1q_u32(&state[4], STATE1);
+}
+
+static const uint8_t PAD[64] = { 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                                 0,    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                                 0,    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                                 0,    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                                 0,    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+
+#define STORE64_BE(DST, W) store64_be((DST), (W))
+static inline void
+store64_be(uint8_t dst[8], uint64_t w)
+{
+#ifdef NATIVE_BIG_ENDIAN
+    memcpy(dst, &w, sizeof w);
+#else
+    dst[7] = (uint8_t) w; w >>= 8;
+    dst[6] = (uint8_t) w; w >>= 8;
+    dst[5] = (uint8_t) w; w >>= 8;
+    dst[4] = (uint8_t) w; w >>= 8;
+    dst[3] = (uint8_t) w; w >>= 8;
+    dst[2] = (uint8_t) w; w >>= 8;
+    dst[1] = (uint8_t) w; w >>= 8;
+    dst[0] = (uint8_t) w;
+#endif
+}
+
+static void
+SHA256_Pad(sha256_ctx *ctx, uint32_t tmp32[64 + 8])
+{
+    unsigned int r;
+    unsigned int i;
+
+    r = (unsigned int) ((ctx->len >> 3) & 0x3f);
+    if (r < 56) {
+        for (i = 0; i < 56 - r; i++) {
+            ctx->block[r + i] = PAD[i];
+        }
+    } else {
+        for (i = 0; i < 64 - r; i++) {
+            ctx->block[r + i] = PAD[i];
+        }
+        SHA256_Transform(ctx->h, ctx->block, &tmp32[0], &tmp32[64]);
+        memset(&ctx->block[0], 0, 56);
+    }
+    STORE64_BE(&ctx->block[56], ctx->len);
+    SHA256_Transform(ctx->h, ctx->block, &tmp32[0], &tmp32[64]);
+}
+
+#define sodium_memzero(a, b)
+int ex_sha256_update(sha256_ctx *ctx, const unsigned char *in, unsigned long long inlen)
+{
+    uint32_t           tmp32[64 + 8];
+    unsigned long long i;
+    unsigned long long r;
+
+    if (inlen <= 0U) {
+        return 0;
+    }
+    r = (unsigned long long) ((ctx->len >> 3) & 0x3f);
+
+    ctx->len += ((uint64_t) inlen) << 3;
+    if (inlen < 64 - r) {
+        for (i = 0; i < inlen; i++) {
+            ctx->block[r + i] = in[i];
+        }
+        return 0;
+    }
+    for (i = 0; i < 64 - r; i++) {
+        ctx->block[r + i] = in[i];
+    }
+    SHA256_Transform(ctx->h, ctx->block, &tmp32[0], &tmp32[64]);
+    in += 64 - r;
+    inlen -= 64 - r;
+
+    while (inlen >= 64) {
+        SHA256_Transform(ctx->h, in, &tmp32[0], &tmp32[64]);
+        in += 64;
+        inlen -= 64;
+    }
+    inlen &= 63;
+    for (i = 0; i < inlen; i++) {
+        ctx->block[i] = in[i];
+    }
+    sodium_memzero((void *) tmp32, sizeof tmp32);
+
+    return 0;
+}
+
+#define STORE32_BE(DST, W) store32_be((DST), (W))
+static inline void
+store32_be(uint8_t dst[4], uint32_t w)
+{
+#ifdef NATIVE_BIG_ENDIAN
+    memcpy(dst, &w, sizeof w);
+#else
+    dst[3] = (uint8_t) w; w >>= 8;
+    dst[2] = (uint8_t) w; w >>= 8;
+    dst[1] = (uint8_t) w; w >>= 8;
+    dst[0] = (uint8_t) w;
+#endif
+}
+
+static void
+be32enc_vect(unsigned char *dst, const uint32_t *src, size_t len)
+{
+    size_t i;
+
+    for (i = 0; i < len / 4; i++) {
+        STORE32_BE(dst + i * 4, src[i]);
+    }
+}
+#endif
+
+#ifdef USE_CRYPTO_EXT
+void sha256_update(sha256_ctx *ctx, const unsigned char *message,
+                   unsigned int len)
+{
+	ex_sha256_update(ctx, message, len);
+}
+#else
 void sha256_update(sha256_ctx *ctx, const unsigned char *message,
                    unsigned int len)
 {
@@ -181,7 +468,19 @@ void sha256_update(sha256_ctx *ctx, const unsigned char *message,
     ctx->len = rem_len;
     ctx->tot_len += (block_nb + 1) << 6;
 }
+#endif
 
+#ifdef USE_CRYPTO_EXT
+void sha256_final(sha256_ctx *ctx, unsigned char *digest)
+{
+    uint32_t tmp32[64 + 8];
+
+    SHA256_Pad(ctx, tmp32);
+    be32enc_vect(digest, ctx->h, 32);
+    sodium_memzero((void *) tmp32, sizeof tmp32);
+    sodium_memzero((void *) ctx, sizeof *ctx);
+}
+#else
 void sha256_final(sha256_ctx *ctx, unsigned char *digest)
 {
     unsigned int block_nb;
@@ -206,3 +505,4 @@ void sha256_final(sha256_ctx *ctx, unsigned char *digest)
         UNPACK32(ctx->h[i], &digest[i << 2]);
     }
 }
+#endif
