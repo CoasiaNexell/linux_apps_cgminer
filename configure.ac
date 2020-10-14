@@ -662,6 +662,14 @@ else
 	LIBSYSTEMD_LIBS=""
 fi
 
+# ARMv8 Cryptography Extension
+crypto_ext="yes"
+
+if test "x$crypto_ext" = xyes; then
+	AC_DEFINE([USE_CRYPTO_EXT], [1], [Defined to 1 if ARMv8 Cryptography Extension support is wanted])
+fi
+AM_CONDITIONAL([HAVE_CRYPTO_EXT], [test x$crypto_ext = xyes])
+
 #check execv signature
 AC_COMPILE_IFELSE([AC_LANG_SOURCE([
 		   #include <process.h>
@@ -749,6 +757,12 @@ if test "x$libsystemd" != xno; then
 	echo "  libsystemd...........: Enabled: $LIBSYSTEMD_LIBS"
 else
 	echo "  libsystemd...........: Disabled"
+fi
+
+if test "x$crypto_ext" != xno; then
+	echo "  Crypto.Extension.....: Enabled"
+else
+	echo "  Crypto.Extension.....: Disabled"
 fi
 
 echo "  curses.TUI...........: $cursesmsg"
