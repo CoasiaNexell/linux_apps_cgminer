@@ -80,7 +80,7 @@ enum BTC08_command {
 	SPI_CMD_RUN_BIST		= 0x02,
 	SPI_CMD_READ_BIST		= 0x03,
 	SPI_CMD_RESET			= 0x04,
-	SPI_CMD_SET_PLL			= 0x05, /* noresponse */
+	SPI_CMD_SET_PLL_CONFIG	= 0x05, /* noresponse */
 	SPI_CMD_READ_PLL		= 0x06,
 	SPI_CMD_WRITE_PARM		= 0x07,
 	SPI_CMD_READ_PARM		= 0x08,
@@ -486,7 +486,7 @@ static uint8_t *cmd_RESET_BCAST(struct btc08_chain *btc08)
 	return ret;
 }
 
-static uint8_t *cmd_READ_RESULT_BCAST(struct btc08_chain *btc08)
+static uint8_t *cmd_READ_JOB_ID_BCAST(struct btc08_chain *btc08)
 {
 	int tx_len = 6+2, ii;
 	bool ret;
@@ -1036,7 +1036,7 @@ static bool set_pll_config(struct btc08_chain *btc08, int chip_id, int pll)
 		sbuf[1] = (uint8_t)(pll_sets[pll_idx].val>>16)&0xff;
 		sbuf[2] = (uint8_t)(pll_sets[pll_idx].val>> 8)&0xff;
 		sbuf[3] = (uint8_t)(pll_sets[pll_idx].val>> 0)&0xff;
-		ret = exec_cmd(btc08, SPI_CMD_SET_PLL, chip_id, sbuf, 4, 0);
+		ret = exec_cmd(btc08, SPI_CMD_SET_PLL_CONFIG, chip_id, sbuf, 4, 0);
 
 		if(chip_id) {
 			if (!check_chip_pll_lock(btc08, chip_id)) {
@@ -1658,7 +1658,7 @@ static bool get_nonce(struct btc08_chain *btc08, uint8_t *nonce,
 	if(get_pin(btc08->pinnum_gpio_gn) != '0') return false;
 
 	do {
-		ret = cmd_READ_RESULT_BCAST(btc08);
+		ret = cmd_READ_JOB_ID_BCAST(btc08);
 		if (ret == NULL)
 			return false;
 		if ((ret[2]&3) == 0) {
@@ -1982,7 +1982,7 @@ static int hashboard_test(struct btc08_chain *btc08)
 //	set_control(btc08, 0, 1|(1<<4));	// set OON int
 	do {
 		if(get_pin(btc08->pinnum_gpio_gn) == '0') {
-			ret = cmd_READ_RESULT_BCAST(btc08);
+			ret = cmd_READ_JOB_ID_BCAST(btc08);
 
 			if(ret[2]&1) {
 				chip_id = ret[3];
