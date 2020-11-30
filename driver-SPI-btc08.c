@@ -23,13 +23,32 @@
 
 #include "btc08-common.h"
 
+#define GPIOA	0
+#define GPIOB	32
+#define GPIOC	64
+#define GPIOD	96
+#define GPIOE	128
+
+#define GPIO_HASH1_VOLCTRL		(GPIOA + 9)			// High: Hash1, Low: VTK
+#define GPIO_HASH1_PLUG			(GPIOA + 11)		// High: Hash1 connected, Low: Hash removed
+#define GPIO_HASH0_VOLCTRL		(GPIOA + 20)		// High: Hash0, Low: VTK
+#define GPIO_HASH0_PLUG			(GPIOA + 24)		// High: Hash0 connected, Low: Hash removed
+
+#define GPIO_HASH0_OON			(GPIOD + 29)		// ACTIVE_LOW
+#define GPIO_HASH0_GLD			(GPIOD + 30)		// ACTIVE_LOW
+#define GPIO_HASH0_RST			(GPIOD + 31)		// ACTIVE_LOW
+
+#define GPIO_HASH1_OON			(GPIOE + 2)			// ACTIVE_LOW
+#define GPIO_HASH1_GLD			(GPIOE + 3)			// ACTIVE_LOW
+#define GPIO_HASH1_RST			(GPIOE + 4)			// ACTIVE_LOW
+
 static struct spi_ctx *spi[MAX_SPI_PORT];
 static int spi_available_bus[MAX_SPI_PORT] = {0, 2};
-static int vctrl_pin[MAX_SPI_PORT] = {20, 9};
-static int plug_pin[MAX_SPI_PORT] = {24, 11};
-static int reset_pin[MAX_SPI_PORT] = {66, 66};
-static int gn_pin[MAX_SPI_PORT] = {65, 65};
-static int oon_pin[MAX_SPI_PORT] = {113, 113};
+static int vctrl_pin[MAX_SPI_PORT] = {GPIO_HASH0_VOLCTRL, GPIO_HASH1_VOLCTRL};
+static int plug_pin[MAX_SPI_PORT] = {GPIO_HASH0_PLUG, GPIO_HASH1_PLUG};
+static int reset_pin[MAX_SPI_PORT] = {GPIO_HASH0_RST, GPIO_HASH1_RST};
+static int gn_pin[MAX_SPI_PORT] = {GPIO_HASH0_GLD, GPIO_HASH1_GLD};
+static int oon_pin[MAX_SPI_PORT] = {GPIO_HASH0_OON, GPIO_HASH1_OON};
 static int adc_ch[MAX_SPI_PORT] = {0, 1};
 static int spi_idx = 0;
 
@@ -2148,16 +2167,13 @@ void btc08_detect(bool hotplug)
 		return;
 
 	// reset
-	set_pin(66, 0);
+	set_pin(GPIO_HASH0_RST, 0);
 	cgsleep_us(1000);
-	set_pin(66, 1);
+	set_pin(GPIO_HASH0_RST, 1);
 
-	//
-//	fd_gpio = open("/sys/class/gpio/gpio132/value", O_WRONLY);
-//	write(fd_gpio, "0", 2);	// reset
-//	cgsleep_us(1000);
-//	write(fd_gpio, "1", 2);	// reset
-//	close(fd_gpio);
+	set_pin(GPIO_HASH1_RST, 0);
+	cgsleep_us(1000);
+	set_pin(GPIO_HASH1_RST, 1);
 
 	/* parse btc08-options */
 	if (opt_btc08_options != NULL && parsed_config_options == NULL) {
