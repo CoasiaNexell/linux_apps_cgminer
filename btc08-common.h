@@ -16,18 +16,48 @@ struct work_queue {
 	struct list_head head;
 };
 
+// Used for a bytes align
 #define ALIGN(x, a) (((x) + (a) - 1) & ~((a) - 1))
+
+#define CMD_CHIP_ID_LEN		2
+#define BCAST_CHIP_ID		0x00
+
 /********** chip and chain context structures */
 /* the WRITE_JOB command is the largest (2 bytes command, 56 bytes payload) */
-#define WRITE_JOB_LENGTH	((256+96+256+256+256)/8)//(midstate + data + midstate + midstate)
-#define MAX_CHAIN_LENGTH	256
+#define MIDSTATE_LEN		32		// 256 bits
+// MerkleRoot + timestamp + difficulty
+#define DATA_LEN			12		// 96 bits
+
+#define ASIC_BOOST_CORE_NUM	4
+
+#define DISABLE_LEN			32
+#define HASH_LEN			32
+#define NONCE_LEN			4
+#define TARGET_LEN			6
+#define PLL_VALUE_LEN 		2
+#define JOB_ID_LEN			2
+
+// midstate + data + midstate + midstate + midstate
+#define WRITE_JOB_LEN	(((ASIC_BOOST_CORE_NUM * MIDSTATE_LEN) + DATA_LEN))
+#define MAX_CHAIN_LEN		256
 /*
  * For commands to traverse the chain, we need to issue dummy writes to
  * keep SPI clock running. To reach the last chip in the chain, we need to
  * write the command, followed by chain-length words to pass it through the
  * chain and another chain-length words to get the ACK back to host
  */
-#define MAX_CMD_LENGTH		(1024)	// param + command
+#define MAX_CMD_LENGTH			(1024)	// param + command
+
+#define RET_AUTO_ADDRESS_LEN	2		// 16 bits
+#define RET_READ_ID_LEN			4		// 32 bits
+#define RET_READ_JOB_ID_LEN		4		// 32 bits
+#define RET_READ_RESULT_LEN 	18		// 144 bits
+#define RET_READ_HASH_LEN 		128		// 1024 bits
+#define RET_READ_TEMP_LEN		2		// 16 bits
+#define RET_READ_PLL_LEN		4		// 32 bits
+#define RET_READ_BIST_LEN		2		// 16 bits
+#define RET_READ_FEATURE_LEN	4		// 32 bits
+#define RET_READ_REVISION_LEN	4		// 32 bits
 
 #define	TIME_LIMIT_OF_OON	4000	/* mili seconds */
 #define	TIME_LIMIT_OF_OON_FPGA	120000	/* mili seconds */
@@ -88,7 +118,7 @@ struct btc08_chain {
 
 	/* mark chain disabled, do not try to re-enable it */
 	bool disabled;
-	int temp[MAX_CHAIN_LENGTH];
+	int temp[MAX_CHAIN_LEN];
 	int high_temp_val;
 	float high_temp_val_f;
 	int high_temp_id;
