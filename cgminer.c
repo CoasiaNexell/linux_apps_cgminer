@@ -5246,7 +5246,7 @@ static void set_curblock(const char *hexstr, const unsigned char *bedata)
 	int ofs;
 
 	cg_wlock(&ch_lock);
-	cgtime(&block_timeval);
+	cgtime_real(&block_timeval);
 	strcpy(current_hash, hexstr);
 	cg_memcpy(current_block, bedata, 32);
 	get_timestamp(blocktime, sizeof(blocktime), &block_timeval);
@@ -10422,10 +10422,12 @@ begin_bench:
 		cgpu->rolling = cgpu->total_mhashes = 0;
 	}
 
+	cgtime_real(&total_tv_start);
+	get_datestamp(datestamp, sizeof(datestamp), &total_tv_start);
+
 	cgtime(&total_tv_start);
 	cgtime(&total_tv_end);
 	cgtime(&tv_hashmeter);
-	get_datestamp(datestamp, sizeof(datestamp), &total_tv_start);
 
 	watchpool_thr_id = 2;
 	thr = &control_thr[watchpool_thr_id];
