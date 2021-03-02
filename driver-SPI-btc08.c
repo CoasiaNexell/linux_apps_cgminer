@@ -2122,6 +2122,62 @@ static bool detect_single_chain(struct spi_ctx *ctx, int idx)
 	return true;
 }
 
+static void export_gpios()
+{
+	int fd;
+	char port[8];
+	char path[64];
+	for( int i ; i<MAX_SPI_PORT ; i++ )
+	{
+		//	RESET
+		fd = open("/sys/class/gpio/export", O_WRONLY);
+		if( fd > 0 )
+		{
+			sprintf(port, "%d", reset_pin[i]);
+			write(fd, port, strlen(port));
+			close(fd);
+
+			sprintf(path, "/sys/class/gpio/gpio%d/direction", reset_pin[i]);
+			fd = open(path, O_WRONLY);
+			if( fd>0 )
+			{
+				write(fd, "out", 3);
+				close(fd);
+			}
+		}
+		//	OON
+		fd = open("/sys/class/gpio/export", O_WRONLY);
+		if( fd > 0 )
+		{
+			sprintf(port, "%d", oon_pin[i]);
+			write(fd, port, strlen(port));
+			close(fd);
+			sprintf(path, "/sys/class/gpio/gpio%d/direction", oon_pin[i]);
+			fd = open(path, O_WRONLY);
+			if( fd>0 )
+			{
+				write(fd, "in", 2);
+				close(fd);
+			}
+		}
+		//	GN
+		fd = open("/sys/class/gpio/export", O_WRONLY);
+		if( fd > 0 )
+		{
+			sprintf(port, "%d", gn_pin[i]);
+			write(fd, port, strlen(port));
+			close(fd);
+			sprintf(path, "/sys/class/gpio/gpio%d/direction", gn_pin[i]);
+			fd = open(path, O_WRONLY);
+			if( fd>0 )
+			{
+				write(fd, "in", 2);
+				close(fd);
+			}
+		}
+	}
+}
+
 /* Probe SPI channel and register chip chain */
 void btc08_detect(bool hotplug)
 {
@@ -2131,6 +2187,8 @@ void btc08_detect(bool hotplug)
 	/* no hotplug support for SPI */
 	if (hotplug)
 		return;
+
+	export_gpios();
 
 	// reset
 	set_pin(GPIO_HASH0_RST, 0);
