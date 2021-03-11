@@ -43,6 +43,15 @@
 #define GPIO_HASH1_RST			(GPIOE + 4)			// ACTIVE_LOW
 
 static struct spi_ctx *spi[MAX_SPI_PORT];
+#if defined(USE_BTC08_FPGA)
+static int spi_available_bus[MAX_SPI_PORT] = {0};
+static int vctrl_pin[MAX_SPI_PORT] = {GPIO_HASH0_VOLCTRL};
+static int plug_pin[MAX_SPI_PORT] = {GPIO_HASH0_PLUG};
+static int reset_pin[MAX_SPI_PORT] = {GPIO_HASH0_RST};
+static int gn_pin[MAX_SPI_PORT] = {GPIO_HASH0_GLD};
+static int oon_pin[MAX_SPI_PORT] = {GPIO_HASH0_OON};
+static int adc_ch[MAX_SPI_PORT] = {0};
+#else
 static int spi_available_bus[MAX_SPI_PORT] = {0, 2};
 static int vctrl_pin[MAX_SPI_PORT] = {GPIO_HASH0_VOLCTRL, GPIO_HASH1_VOLCTRL};
 static int plug_pin[MAX_SPI_PORT] = {GPIO_HASH0_PLUG, GPIO_HASH1_PLUG};
@@ -50,6 +59,7 @@ static int reset_pin[MAX_SPI_PORT] = {GPIO_HASH0_RST, GPIO_HASH1_RST};
 static int gn_pin[MAX_SPI_PORT] = {GPIO_HASH0_GLD, GPIO_HASH1_GLD};
 static int oon_pin[MAX_SPI_PORT] = {GPIO_HASH0_OON, GPIO_HASH1_OON};
 static int adc_ch[MAX_SPI_PORT] = {0, 1};
+#endif
 static int spi_idx = 0;
 
 /********** work queue */
@@ -744,7 +754,7 @@ static uint8_t cmd_WRITE_JOB_fast(struct btc08_chain *btc08,
 	xfr[0].tx_buf = (unsigned long)spi_tx;
 	xfr[0].rx_buf = (unsigned long)NULL;
 	xfr[0].len = tx_len;
-#if !defined(FPGA)
+#if !defined(USE_BTC08_FPGA)
 	xfr[0].speed_hz = btc08->spi_ctx->config.speed*20;
 #else
 	xfr[0].speed_hz = btc08->spi_ctx->config.speed*2;
@@ -766,7 +776,7 @@ static uint8_t cmd_WRITE_JOB_fast(struct btc08_chain *btc08,
 	xfr[1].tx_buf = (unsigned long)spi_tx;
 	xfr[1].rx_buf = (unsigned long)NULL;
 	xfr[1].len = tx_len;
-#if !defined(FPGA)
+#if !defined(USE_BTC08_FPGA)
 	xfr[1].speed_hz = btc08->spi_ctx->config.speed*20;
 #else
 	xfr[1].speed_hz = btc08->spi_ctx->config.speed*2;
@@ -806,7 +816,7 @@ static uint8_t cmd_WRITE_JOB_fast(struct btc08_chain *btc08,
 		xfr[ii].tx_buf = (unsigned long)spi_tx;
 		xfr[ii].rx_buf = (unsigned long)NULL;
 		xfr[ii].len = tx_len;
-#if !defined(FPGA)
+#if !defined(USE_BTC08_FPGA)
 		xfr[ii].speed_hz = btc08->spi_ctx->config.speed*20;
 #else
 		xfr[ii].speed_hz = btc08->spi_ctx->config.speed*2;
@@ -834,7 +844,7 @@ static uint8_t cmd_WRITE_JOB_fast(struct btc08_chain *btc08,
 	xfr[ii].tx_buf = (unsigned long)spi_tx;
 	xfr[ii].rx_buf = (unsigned long)NULL;
 	xfr[ii].len = tx_len;
-#if !defined(FPGA)
+#if !defined(USE_BTC08_FPGA)
 	xfr[ii].speed_hz = btc08->spi_ctx->config.speed*20;
 #else
 	xfr[ii].speed_hz = btc08->spi_ctx->config.speed*2;
@@ -861,7 +871,7 @@ static uint8_t cmd_WRITE_JOB_fast(struct btc08_chain *btc08,
 
 static uint8_t cmd_READ_TEMP(struct btc08_chain *btc08, uint8_t chip_id)
 {
-#if !defined(FPGA)
+#if !defined(USE_BTC08_FPGA)
 	uint8_t *ret;
 	if(((btc08->chips[btc08->num_chips-1].rev>>16)&0xf) == 0x0) return 30; // for FPGA, there is no temperature sensor in FPGA, so 30 is just a value for testing
 	ret = exec_cmd(btc08, SPI_CMD_READ_TEMP, chip_id, NULL, 0, RET_READ_TEMP_LEN);
@@ -881,7 +891,7 @@ static uint8_t cmd_READ_TEMP(struct btc08_chain *btc08, uint8_t chip_id)
 #define PLL_CYCLE_WAIT_TIME 40
 static bool check_chip_pll_lock(struct btc08_chain *btc08, int chip_id)
 {
-#if !defined(FPGA)
+#if !defined(USE_BTC08_FPGA)
 	int n;
 	int cid = btc08->chain_id;
 	uint8_t *ret;
@@ -1203,7 +1213,7 @@ static int test_spi_seq(struct btc08_chain *btc08)
 		xfr[ii].tx_buf = (unsigned long)spi_tx;
 		xfr[ii].rx_buf = (unsigned long)spi_rx;
 		xfr[ii].len = tx_len;
-#if !defined(FPGA)
+#if !defined(USE_BTC08_FPGA)
 		xfr[ii].speed_hz = btc08->spi_ctx->config.speed*20;
 #else
 		xfr[ii].speed_hz = btc08->spi_ctx->config.speed*2;
