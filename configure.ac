@@ -302,7 +302,7 @@ AM_CONDITIONAL([HAS_BTC08], [test x$btc08 = xyes])
 
 btc08_fpga="no"
 
-AC_ARG_ENABLE([btc08],
+AC_ARG_ENABLE([btc08_fpga],
 	[AC_HELP_STRING([--enable-btc08-fpga],[Compile support for BTC08 FPGA (default disabled)])],
 	[btc08_fpga=$enableval]
 	)
