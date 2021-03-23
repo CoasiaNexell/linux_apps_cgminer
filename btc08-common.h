@@ -98,31 +98,37 @@ struct work_queue {
 #define MIN_UART_DIVIDER    	(0x03)
 
 enum BTC08_command {
-	SPI_CMD_READ_ID			= 0x00,
-	SPI_CMD_AUTO_ADDRESS	= 0x01,
-	SPI_CMD_RUN_BIST		= 0x02,
-	SPI_CMD_READ_BIST		= 0x03,
-	SPI_CMD_RESET			= 0x04,
-	SPI_CMD_SET_PLL_CONFIG	= 0x05, /* noresponse */
-	SPI_CMD_READ_PLL		= 0x06,
-	SPI_CMD_WRITE_PARM		= 0x07,
-	SPI_CMD_READ_PARM		= 0x08,
-	SPI_CMD_WRITE_TARGET	= 0x09,
-	SPI_CMD_READ_TARGET		= 0x0A,
-	SPI_CMD_RUN_JOB			= 0x0B,
-	SPI_CMD_READ_JOB_ID		= 0x0C,
-	SPI_CMD_READ_RESULT		= 0x0D,
-	SPI_CMD_CLEAR_OON		= 0x0E,
-	SPI_CMD_SET_DISABLE		= 0x10,
-	SPI_CMD_READ_DISABLE	= 0x11,
-	SPI_CMD_SET_CONTROL		= 0x12,	/* no response */
-	SPI_CMD_READ_TEMP		= 0x14,
-	SPI_CMD_WRITE_NONCE		= 0x16,
-	SPI_CMD_READ_HASH		= 0x20,
-	SPI_CMD_READ_FEATURE	= 0x32,
-	SPI_CMD_READ_REVISION	= 0x33,
-	SPI_CMD_SET_PLL_FOUT_EN	= 0x34,
-	SPI_CMD_SET_PLL_RESETB 	= 0x35,
+	SPI_CMD_READ_ID          = 0x00,
+	SPI_CMD_AUTO_ADDRESS     = 0x01,
+	SPI_CMD_RUN_BIST         = 0x02,
+	SPI_CMD_READ_BIST        = 0x03,
+	SPI_CMD_RESET            = 0x04,
+	SPI_CMD_SET_PLL_CONFIG   = 0x05,
+	SPI_CMD_READ_PLL         = 0x06,
+	SPI_CMD_WRITE_PARM       = 0x07,
+	SPI_CMD_READ_PARM        = 0x08,
+	SPI_CMD_WRITE_TARGET     = 0x09,
+	SPI_CMD_READ_TARGET      = 0x0A,
+	SPI_CMD_RUN_JOB          = 0x0B,
+	SPI_CMD_READ_JOB_ID      = 0x0C,
+	SPI_CMD_READ_RESULT      = 0x0D,
+	SPI_CMD_CLEAR_OON        = 0x0E,
+	SPI_CMD_SET_DISABLE      = 0x10,
+	SPI_CMD_READ_DISABLE     = 0x11,
+	SPI_CMD_SET_CONTROL      = 0x12,
+	SPI_CMD_DEBUG            = 0x15,
+	SPI_CMD_WRITE_NONCE      = 0x16,
+	SPI_CMD_WRITE_CORE_CFG   = 0x17,
+	SPI_CMD_READ_DEBUGCNT    = 0x19,
+	SPI_CMD_READ_HASH        = 0x20,
+	SPI_CMD_WRITE_IO_CTRL    = 0x30,
+	SPI_CMD_READ_IO_CTRL     = 0x31,
+	SPI_CMD_READ_FEATURE     = 0x32,
+	SPI_CMD_READ_REVISION    = 0x33,
+	SPI_CMD_SET_PLL_FOUT_EN  = 0x34,
+	SPI_CMD_SET_PLL_RESETB   = 0x35,
+	SPI_CMD_WRITE_CORE_DEPTH = 0x36,
+	SPI_CMD_SET_TMODE        = 0x38
 };
 
 struct btc08_chip {
@@ -213,4 +219,5 @@ struct btc08_config_options {
 
 /* global configuration instance */
 extern struct btc08_config_options btc08_config_options;
+const char *cmd2str(enum BTC08_command cmd);
 #endif /* BTC08_COMMON_H */

@@ -259,62 +259,42 @@ static void flush_spi(struct btc08_chain *btc08)
 	hexdump("send: RX", btc08->spi_rx, 64);
 }
 
-static const char *cmd2str(enum BTC08_command cmd)
+const char *cmd2str(enum BTC08_command cmd)
 {
 	switch(cmd)
 	{
-		case SPI_CMD_READ_ID:
-			return "SPI_CMD_READ_ID";
-		case SPI_CMD_AUTO_ADDRESS:
-			return "SPI_CMD_AUTO_ADDRESS";
-		case SPI_CMD_RUN_BIST:
-			return "SPI_CMD_RUN_BIST";
-		case SPI_CMD_READ_BIST:
-			return "SPI_CMD_READ_BIST";
-		case SPI_CMD_RESET:
-			return "SPI_CMD_RESET";
-		case SPI_CMD_SET_PLL_CONFIG:
-			return "SPI_CMD_SET_PLL_CONFIG";
-		case SPI_CMD_READ_PLL:
-			return "SPI_CMD_READ_PLL";
-		case SPI_CMD_WRITE_PARM:
-			return "SPI_CMD_WRITE_PARM";
-		case SPI_CMD_READ_PARM:
-			return "SPI_CMD_READ_PARM";
-		case SPI_CMD_WRITE_TARGET:
-			return "SPI_CMD_WRITE_TARGET";
-		case SPI_CMD_READ_TARGET:
-			return "SPI_CMD_READ_TARGET";
-		case SPI_CMD_RUN_JOB:
-			return "SPI_CMD_RUN_JOB";
-		case SPI_CMD_READ_JOB_ID:
-			return "SPI_CMD_READ_JOB_ID";
-		case SPI_CMD_READ_RESULT:
-			return "SPI_CMD_READ_RESULT";
-		case SPI_CMD_CLEAR_OON:
-			return "SPI_CMD_CLEAR_OON";
-		case SPI_CMD_SET_DISABLE:
-			return "SPI_CMD_SET_DISABLE";
-		case SPI_CMD_READ_DISABLE:
-			return "SPI_CMD_READ_DISABLE";
-		case SPI_CMD_SET_CONTROL:
-			return "SPI_CMD_SET_CONTROL";
-		case SPI_CMD_READ_TEMP:
-			return "SPI_CMD_READ_TEMP";
-		case SPI_CMD_WRITE_NONCE:
-			return "SPI_CMD_WRITE_NONCE";
-		case SPI_CMD_READ_HASH:
-			return "SPI_CMD_READ_HASH";
-		case SPI_CMD_READ_FEATURE:
-			return "SPI_CMD_READ_FEATURE";
-		case SPI_CMD_READ_REVISION:
-			return "SPI_CMD_READ_REVISION";
-		case SPI_CMD_SET_PLL_FOUT_EN:
-			return "SPI_CMD_SET_PLL_FOUT_EN";
-		case SPI_CMD_SET_PLL_RESETB:
-			return "SPI_CMD_SET_PLL_RESETB";
-		default:
-			return "UNKNOWN SPI CMD";
+		case SPI_CMD_READ_ID:           return "SPI_CMD_READ_ID";
+		case SPI_CMD_AUTO_ADDRESS:      return "SPI_CMD_AUTO_ADDRESS";
+		case SPI_CMD_RUN_BIST:          return "SPI_CMD_RUN_BIST";
+		case SPI_CMD_READ_BIST:         return "SPI_CMD_READ_BIST";
+		case SPI_CMD_RESET:             return "SPI_CMD_RESET";
+		case SPI_CMD_SET_PLL_CONFIG:    return "SPI_CMD_SET_PLL_CONFIG";
+		case SPI_CMD_READ_PLL:          return "SPI_CMD_READ_PLL";
+		case SPI_CMD_WRITE_PARM:        return "SPI_CMD_WRITE_PARM";
+		case SPI_CMD_READ_PARM:         return "SPI_CMD_READ_PARM";
+		case SPI_CMD_WRITE_TARGET:      return "SPI_CMD_WRITE_TARGET";
+		case SPI_CMD_READ_TARGET:       return "SPI_CMD_READ_TARGET";
+		case SPI_CMD_RUN_JOB:           return "SPI_CMD_RUN_JOB";
+		case SPI_CMD_READ_JOB_ID:       return "SPI_CMD_READ_JOB_ID";
+		case SPI_CMD_READ_RESULT:       return "SPI_CMD_READ_RESULT";
+		case SPI_CMD_CLEAR_OON:         return "SPI_CMD_CLEAR_OON";
+		case SPI_CMD_SET_DISABLE:       return "SPI_CMD_SET_DISABLE";
+		case SPI_CMD_READ_DISABLE:      return "SPI_CMD_READ_DISABLE";
+		case SPI_CMD_SET_CONTROL:       return "SPI_CMD_SET_CONTROL";
+		case SPI_CMD_DEBUG:             return "SPI_CMD_DEBUG";
+		case SPI_CMD_WRITE_NONCE:       return "SPI_CMD_WRITE_NONCE";
+		case SPI_CMD_WRITE_CORE_CFG:    return "SPI_CMD_WRITE_CORE_CFG";
+		case SPI_CMD_READ_DEBUGCNT:     return "SPI_CMD_READ_DEBUGCNT";
+		case SPI_CMD_READ_HASH:         return "SPI_CMD_READ_HASH";
+		case SPI_CMD_WRITE_IO_CTRL:     return "SPI_CMD_WRITE_IO_CTRL";
+		case SPI_CMD_READ_IO_CTRL:      return "SPI_CMD_READ_IO_CTRL";
+		case SPI_CMD_READ_FEATURE:      return "SPI_CMD_READ_FEATURE";
+		case SPI_CMD_READ_REVISION:     return "SPI_CMD_READ_REVISION";
+		case SPI_CMD_SET_PLL_FOUT_EN:   return "SPI_CMD_SET_PLL_FOUT_EN";
+		case SPI_CMD_SET_PLL_RESETB:    return "SPI_CMD_SET_PLL_RESETB";
+		case SPI_CMD_WRITE_CORE_DEPTH:  return "SPI_CMD_WRITE_CORE_DEPTH";
+		case SPI_CMD_SET_TMODE:         return "SPI_CMD_SET_TMODE";
+		default:                        return "UNKNOWN SPI CMD";
 	}
 }
 
@@ -918,26 +898,6 @@ static uint8_t cmd_WRITE_JOB_fast(struct btc08_chain *btc08,
 		btc08->disabled = false;
 
 	return true;
-}
-
-static uint8_t cmd_READ_TEMP(struct btc08_chain *btc08, uint8_t chip_id)
-{
-#if !defined(USE_BTC08_FPGA)
-	uint8_t *ret;
-	// for FPGA, there is no temperature sensor in FPGA, so 30 is just a value for testing
-	if(((btc08->chips[btc08->num_chips-1].rev>>16)&0xf) == FEATURE_FOR_FPGA)
-		return 30;
-
-	ret = exec_cmd(btc08, SPI_CMD_READ_TEMP, chip_id, NULL, 0, RET_READ_TEMP_LEN);
-	if (ret == NULL || ret[0] != chip_id) {
-		applog(LOG_ERR, "%d: cmd_READ_TEMP chip %d failed",
-		       btc08->chain_id, chip_id);
-		return 0;
-	}
-	return ret[1];
-#else
-	return 80;
-#endif
 }
 
 /********** btc08 low level functions */
@@ -2390,29 +2350,6 @@ static int64_t btc08_scanwork(struct thr_info *thr)
 
 	mutex_lock(&btc08->lock);
 
-#if !defined(FPGA)
-	if (btc08->last_temp_time + TEMP_UPDATE_INT_MS < get_current_ms()) {
-		btc08->high_temp_val = 0;
-		btc08->high_temp_id = -1;
-		for (i = btc08->last_chip; i < btc08->num_chips; i++) {
-			chip_id = i +1;
-			if(btc08->last_chip)
-				chip_id += (1 -btc08->last_chip);
-
-			btc08->temp[i] = cmd_READ_TEMP(btc08, chip_id);
-			if(btc08->temp[i] > btc08->high_temp_val) {
-				btc08->high_temp_val = btc08->temp[i];
-				btc08->high_temp_id = i;
-			}
-		}
-		cgpu->hot_temp = btc08->high_temp_val;
-		cgpu->hot_id   = btc08->high_temp_id ;
-
-		btc08->last_temp_time = get_current_ms();
-
-		btc08->mvolt = get_mvolt(btc08->volt_ch);
-	}
-#endif
 	int cid = btc08->chain_id;
 	/* poll queued results */
 	while (true) {
