@@ -259,62 +259,42 @@ static void flush_spi(struct btc08_chain *btc08)
 	hexdump("send: RX", btc08->spi_rx, 64);
 }
 
-static const char *cmd2str(enum BTC08_command cmd)
+const char *cmd2str(enum BTC08_command cmd)
 {
 	switch(cmd)
 	{
-		case SPI_CMD_READ_ID:
-			return "SPI_CMD_READ_ID";
-		case SPI_CMD_AUTO_ADDRESS:
-			return "SPI_CMD_AUTO_ADDRESS";
-		case SPI_CMD_RUN_BIST:
-			return "SPI_CMD_RUN_BIST";
-		case SPI_CMD_READ_BIST:
-			return "SPI_CMD_READ_BIST";
-		case SPI_CMD_RESET:
-			return "SPI_CMD_RESET";
-		case SPI_CMD_SET_PLL_CONFIG:
-			return "SPI_CMD_SET_PLL_CONFIG";
-		case SPI_CMD_READ_PLL:
-			return "SPI_CMD_READ_PLL";
-		case SPI_CMD_WRITE_PARM:
-			return "SPI_CMD_WRITE_PARM";
-		case SPI_CMD_READ_PARM:
-			return "SPI_CMD_READ_PARM";
-		case SPI_CMD_WRITE_TARGET:
-			return "SPI_CMD_WRITE_TARGET";
-		case SPI_CMD_READ_TARGET:
-			return "SPI_CMD_READ_TARGET";
-		case SPI_CMD_RUN_JOB:
-			return "SPI_CMD_RUN_JOB";
-		case SPI_CMD_READ_JOB_ID:
-			return "SPI_CMD_READ_JOB_ID";
-		case SPI_CMD_READ_RESULT:
-			return "SPI_CMD_READ_RESULT";
-		case SPI_CMD_CLEAR_OON:
-			return "SPI_CMD_CLEAR_OON";
-		case SPI_CMD_SET_DISABLE:
-			return "SPI_CMD_SET_DISABLE";
-		case SPI_CMD_READ_DISABLE:
-			return "SPI_CMD_READ_DISABLE";
-		case SPI_CMD_SET_CONTROL:
-			return "SPI_CMD_SET_CONTROL";
-		case SPI_CMD_READ_TEMP:
-			return "SPI_CMD_READ_TEMP";
-		case SPI_CMD_WRITE_NONCE:
-			return "SPI_CMD_WRITE_NONCE";
-		case SPI_CMD_READ_HASH:
-			return "SPI_CMD_READ_HASH";
-		case SPI_CMD_READ_FEATURE:
-			return "SPI_CMD_READ_FEATURE";
-		case SPI_CMD_READ_REVISION:
-			return "SPI_CMD_READ_REVISION";
-		case SPI_CMD_SET_PLL_FOUT_EN:
-			return "SPI_CMD_SET_PLL_FOUT_EN";
-		case SPI_CMD_SET_PLL_RESETB:
-			return "SPI_CMD_SET_PLL_RESETB";
-		default:
-			return "UNKNOWN SPI CMD";
+		case SPI_CMD_READ_ID:           return "SPI_CMD_READ_ID";
+		case SPI_CMD_AUTO_ADDRESS:      return "SPI_CMD_AUTO_ADDRESS";
+		case SPI_CMD_RUN_BIST:          return "SPI_CMD_RUN_BIST";
+		case SPI_CMD_READ_BIST:         return "SPI_CMD_READ_BIST";
+		case SPI_CMD_RESET:             return "SPI_CMD_RESET";
+		case SPI_CMD_SET_PLL_CONFIG:    return "SPI_CMD_SET_PLL_CONFIG";
+		case SPI_CMD_READ_PLL:          return "SPI_CMD_READ_PLL";
+		case SPI_CMD_WRITE_PARM:        return "SPI_CMD_WRITE_PARM";
+		case SPI_CMD_READ_PARM:         return "SPI_CMD_READ_PARM";
+		case SPI_CMD_WRITE_TARGET:      return "SPI_CMD_WRITE_TARGET";
+		case SPI_CMD_READ_TARGET:       return "SPI_CMD_READ_TARGET";
+		case SPI_CMD_RUN_JOB:           return "SPI_CMD_RUN_JOB";
+		case SPI_CMD_READ_JOB_ID:       return "SPI_CMD_READ_JOB_ID";
+		case SPI_CMD_READ_RESULT:       return "SPI_CMD_READ_RESULT";
+		case SPI_CMD_CLEAR_OON:         return "SPI_CMD_CLEAR_OON";
+		case SPI_CMD_SET_DISABLE:       return "SPI_CMD_SET_DISABLE";
+		case SPI_CMD_READ_DISABLE:      return "SPI_CMD_READ_DISABLE";
+		case SPI_CMD_SET_CONTROL:       return "SPI_CMD_SET_CONTROL";
+		case SPI_CMD_DEBUG:             return "SPI_CMD_DEBUG";
+		case SPI_CMD_WRITE_NONCE:       return "SPI_CMD_WRITE_NONCE";
+		case SPI_CMD_WRITE_CORE_CFG:    return "SPI_CMD_WRITE_CORE_CFG";
+		case SPI_CMD_READ_DEBUGCNT:     return "SPI_CMD_READ_DEBUGCNT";
+		case SPI_CMD_READ_HASH:         return "SPI_CMD_READ_HASH";
+		case SPI_CMD_WRITE_IO_CTRL:     return "SPI_CMD_WRITE_IO_CTRL";
+		case SPI_CMD_READ_IO_CTRL:      return "SPI_CMD_READ_IO_CTRL";
+		case SPI_CMD_READ_FEATURE:      return "SPI_CMD_READ_FEATURE";
+		case SPI_CMD_READ_REVISION:     return "SPI_CMD_READ_REVISION";
+		case SPI_CMD_SET_PLL_FOUT_EN:   return "SPI_CMD_SET_PLL_FOUT_EN";
+		case SPI_CMD_SET_PLL_RESETB:    return "SPI_CMD_SET_PLL_RESETB";
+		case SPI_CMD_WRITE_CORE_DEPTH:  return "SPI_CMD_WRITE_CORE_DEPTH";
+		case SPI_CMD_SET_TMODE:         return "SPI_CMD_SET_TMODE";
+		default:                        return "UNKNOWN SPI CMD";
 	}
 }
 
