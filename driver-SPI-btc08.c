@@ -770,8 +770,9 @@ static uint8_t cmd_WRITE_JOB_test(struct btc08_chain *btc08, uint8_t job_id, uin
 static uint8_t cmd_WRITE_JOB_fast(struct btc08_chain *btc08,
 			      uint8_t job_id, uint8_t *job, struct work *work)
 {
-	int ii=0, spi_len0, spi_len1, spi_len2, ret = 0;
+	int ii=0, ret = 0;
 	bool retb;
+
 	/* ensure we push the SPI command to the last chip in chain */
 	uint8_t *spi_tx = job;
 	struct spi_ioc_transfer *xfr = btc08->xfr;
@@ -798,34 +799,12 @@ static uint8_t cmd_WRITE_JOB_fast(struct btc08_chain *btc08,
 	xfr[0].pad = 0;
 	spi_tx += tx_len;
 
-	// CLEAR_OON
-	tx_len = CMD_CHIP_ID_LEN;
-
-	spi_tx[0] = SPI_CMD_CLEAR_OON;
-	spi_tx[1] = 0;
-	hexdump("send: TX", spi_tx, tx_len);
-	xfr[1].tx_buf = (unsigned long)spi_tx;
-	xfr[1].rx_buf = (unsigned long)NULL;
-	xfr[1].len = tx_len;
-#if !defined(USE_BTC08_FPGA)
-	xfr[1].speed_hz = btc08->spi_ctx->config.speed*20;
-#else
-	xfr[1].speed_hz = btc08->spi_ctx->config.speed*2;
-#endif
-	xfr[1].delay_usecs = btc08->spi_ctx->config.delay;
-	xfr[1].bits_per_word = btc08->spi_ctx->config.bits;
-	xfr[1].cs_change = 1;
-	xfr[1].tx_nbits = 0;
-	xfr[1].rx_nbits = 0;
-	xfr[1].pad = 0;
-	spi_tx += tx_len; 
-
-	ii = 2;
+	ii++;
 
 	// WRITE_TARGET
 	if(btc08->sdiff != work->sdiff)
 	{
-		tx_len = CMD_CHIP_ID_LEN + TARGET_LEN;
+		tx_len = ALIGN((CMD_CHIP_ID_LEN + TARGET_LEN), 4);
 		btc08->sdiff = work->sdiff;
 		/* target */
 		uint32_t nbits = nbits_from_target(work->target);
@@ -838,7 +817,7 @@ static uint8_t cmd_WRITE_JOB_fast(struct btc08_chain *btc08,
 		select[1] = (((select[1]-1)&3)+1)<<4;;
 		*nbits_ptr = bswap_32(nbits);
 		spi_tx[0] = SPI_CMD_WRITE_TARGET;
-		spi_tx[1] = 0;
+		spi_tx[1] = BCAST_CHIP_ID;
 		spi_tx[8] = 0;
 		hexdump_error("send: TX", spi_tx, tx_len);
 		hexdump_error("target:", work->target, 32);
@@ -864,9 +843,10 @@ static uint8_t cmd_WRITE_JOB_fast(struct btc08_chain *btc08,
 	}
 
 	// RUN_JOB
-	tx_len = CMD_CHIP_ID_LEN + JOB_ID_LEN;
+	tx_len = ALIGN((CMD_CHIP_ID_LEN + JOB_ID_LEN + DUMMY_BYTES), 4);
+
 	spi_tx[0] = SPI_CMD_RUN_JOB;
-	spi_tx[1] = 0;
+	spi_tx[1] = BCAST_CHIP_ID;
 	spi_tx[2] = 0;
 	if (work->pool->vmask)
 		spi_tx[2] |= 2;
