@@ -53,6 +53,7 @@ struct work_queue {
 #define TARGET_LEN			6
 #define PLL_VALUE_LEN 		2
 #define JOB_ID_LEN			2
+#define DUMMY_BYTES			2
 
 // midstate + data + midstate + midstate + midstate
 #define WRITE_JOB_LEN		(((ASIC_BOOST_CORE_NUM * MIDSTATE_LEN) + DATA_LEN))
