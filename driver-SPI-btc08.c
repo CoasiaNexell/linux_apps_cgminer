@@ -1183,29 +1183,21 @@ static bool calc_nonce_range(struct btc08_chain *btc08)
 	uint32_t *start_nonce_ptr;
 	uint32_t *  end_nonce_ptr;
 	bool ret;
-	uint32_t end_nonce;
-
-#if defined(USE_BTC08_FPGA)
-	// Hash should be done within 1 second
-	end_nonce = 0x07ffffff;
-#else
-	end_nonce = 0xffffffff;
-#endif
 
 	if(btc08_config_options.test_mode == 1) {
 		for(ii=btc08->last_chip; ii<btc08->num_chips; ii++) {
 			btc08->chips[ii].start_nonce = 0;
-			btc08->chips[ii].end_nonce = end_nonce;
+			btc08->chips[ii].end_nonce = MAX_NONCE_SIZE;
 		}
 	}
 	else {
 		btc08->chips[btc08->last_chip].start_nonce = 0;
 		for(ii=btc08->last_chip; ii<(btc08->num_chips-1); ii++) {
 			btc08->chips[ii].end_nonce = btc08->chips[ii].start_nonce
-				+ ((end_nonce*btc08->chips[ii].perf)/btc08->perf);
+				+ ((MAX_NONCE_SIZE*btc08->chips[ii].perf)/btc08->perf);
 			btc08->chips[ii+1].start_nonce = btc08->chips[ii].end_nonce+1;
 		}
-		btc08->chips[btc08->num_chips-1].end_nonce = end_nonce;
+		btc08->chips[btc08->num_chips-1].end_nonce = MAX_NONCE_SIZE;
 	}
 
 	btc08->disabled = false;
@@ -2517,7 +2509,11 @@ static int64_t btc08_scanwork(struct thr_info *thr)
 //	if (!work_updated)
 //		cgsleep_us(40);
 
-	return (int64_t)nonce_ranges_processed << 32;
+#if defined(USE_BTC08_FPGA)
+	return ((int64_t)nonce_ranges_processed << 24) * 8 * ASIC_BOOST_CORE_NUM;	// nonce range : 128M
+#else
+	return ((int64_t)nonce_ranges_processed << 32) * ASIC_BOOST_CORE_NUM;		// nonce range : 4G
+#endif
 }
 
 

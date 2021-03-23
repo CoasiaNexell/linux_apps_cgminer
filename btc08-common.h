@@ -24,10 +24,12 @@ struct work_queue {
 #define MAX_CORES_PER_CHIP		2
 #define FPGA_MINER_CORE_CLK		50		// 50 MHz
 #define MAX_SPI_PORT			1
+#define MAX_NONCE_SIZE			(0x07ffffff)
 #else
 #define MAX_CHIP_NUM			22
 #define MAX_CORES_PER_CHIP		30
 #define MAX_SPI_PORT			2
+#define MAX_NONCE_SIZE			(0xffffffff)
 #endif
 
 #define MAX_CORES				(MAX_CHIP_NUM * MAX_CORES_PER_CHIP)
