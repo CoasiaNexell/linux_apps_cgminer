@@ -24,10 +24,13 @@ struct work_queue {
 #define MAX_CORES_PER_CHIP		2
 #define FPGA_MINER_CORE_CLK		50		// 50 MHz
 #define MAX_SPI_PORT			1
+// Hash should be done within 1 second
+#define MAX_NONCE_SIZE			(0x07ffffff)
 #else
 #define MAX_CHIP_NUM			22
 #define MAX_CORES_PER_CHIP		30
 #define MAX_SPI_PORT			2
+#define MAX_NONCE_SIZE			(0xffffffff)
 #endif
 
 #define MAX_CORES				(MAX_CHIP_NUM * MAX_CORES_PER_CHIP)
@@ -134,11 +137,8 @@ enum BTC08_command {
 
 struct btc08_chip {
 	int num_cores;
-	int last_queued_id;
-	struct work *work[MAX_JOB_ID_NUM];
 	/* stats */
 	int hw_errors;
-	int busy_job_id_flag[MAX_JOB_ID_NUM];
 	int stales;
 	int nonces_found;
 	int nonce_ranges_done;
@@ -177,6 +177,10 @@ struct btc08_chain {
 	pthread_mutex_t lock;
 
 	struct work_queue active_wq;
+	struct work *work[MAX_JOB_ID_NUM];
+	// a flag to prevent sending READ_ID cmd to all chips.
+	bool is_processing_job;
+	uint8_t last_queued_id;
 
 	/* mark chain disabled, do not try to re-enable it */
 	bool disabled;

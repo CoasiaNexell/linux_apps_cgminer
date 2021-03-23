@@ -1123,29 +1123,21 @@ static bool calc_nonce_range(struct btc08_chain *btc08)
 	uint32_t *start_nonce_ptr;
 	uint32_t *  end_nonce_ptr;
 	bool ret;
-	uint32_t end_nonce;
-
-#if defined(USE_BTC08_FPGA)
-	// Hash should be done within 1 second
-	end_nonce = 0x07ffffff;
-#else
-	end_nonce = 0xffffffff;
-#endif
 
 	if(btc08_config_options.test_mode == 1) {
 		for(ii=btc08->last_chip; ii<btc08->num_chips; ii++) {
 			btc08->chips[ii].start_nonce = 0;
-			btc08->chips[ii].end_nonce = end_nonce;
+			btc08->chips[ii].end_nonce = MAX_NONCE_SIZE;
 		}
 	}
 	else {
 		btc08->chips[btc08->last_chip].start_nonce = 0;
 		for(ii=btc08->last_chip; ii<(btc08->num_chips-1); ii++) {
 			btc08->chips[ii].end_nonce = btc08->chips[ii].start_nonce
-				+ ((end_nonce*btc08->chips[ii].perf)/btc08->perf);
+				+ ((MAX_NONCE_SIZE*btc08->chips[ii].perf)/btc08->perf);
 			btc08->chips[ii+1].start_nonce = btc08->chips[ii].end_nonce+1;
 		}
-		btc08->chips[btc08->num_chips-1].end_nonce = end_nonce;
+		btc08->chips[btc08->num_chips-1].end_nonce = MAX_NONCE_SIZE;
 	}
 
 	btc08->disabled = false;
@@ -1444,6 +1436,7 @@ static bool reinit_chain(struct btc08_chain *btc08)
 
 	btc08->num_cores = 0;
 	btc08->perf = 0;
+	btc08->is_processing_job = false;
 
 	cmd_BIST_BCAST(btc08, BCAST_CHIP_ID);
 
@@ -1582,50 +1575,33 @@ static uint8_t *create_job(uint8_t chip_id, uint8_t *job, struct work *work)
 static bool set_work(struct btc08_chain *btc08, struct work *work)
 {
 	int cid = btc08->chain_id;
-	struct btc08_chip *chip;
 	bool retval = false;
-	uint8_t chip_id = btc08->num_chips-1;
-	int job_id;
+	uint8_t job_id;
 
-	chip = &btc08->chips[chip_id];
-	job_id = chip->last_queued_id + 1;
-	applog(LOG_INFO, "%d: queuing chip %d with job_id %d",
-	       cid, chip_id, job_id);
+	job_id = btc08->last_queued_id + 1;
+	applog(LOG_INFO, "%d: queuing job_id %d", cid, job_id);
 
-	if (chip->work[chip->last_queued_id] != NULL) {
-		work_completed(btc08->cgpu, chip->work[chip->last_queued_id]);
-		chip->work[chip->last_queued_id] = NULL;
+	if (btc08->work[btc08->last_queued_id] != NULL) {
+		// delete already processed work from queued_work of cgpu
+		work_completed(btc08->cgpu, btc08->work[btc08->last_queued_id]);
+		btc08->work[btc08->last_queued_id] = NULL;
 		retval = true;
 	}
 
-	// the chip_id must be 0, because global job
-	uint8_t *jobdata = create_job(0, btc08->spi_ctx->txb, work);
-	calc_nonce_range(btc08);
+	// RUN_JOB for a new work
+	uint8_t *jobdata = create_job(BCAST_CHIP_ID, btc08->spi_ctx->txb, work);
 	if (!cmd_WRITE_JOB_fast(btc08, job_id, jobdata, work)) {
-		/* give back work */
-		work_completed(btc08->cgpu, work);
+		applog(LOG_ERR, "%d: failed to set work for job %d with spi err", cid, job_id);
 
-		applog(LOG_ERR, "%d: failed to set work for job %d",
-		       cid, job_id);
-//		disable_chip(btc08, chip_id);
+		// delete a work from queued_work of cgpu
+		work_completed(btc08->cgpu, work);
 		btc08->disabled = true;
 	} else {
-		chip->work[chip->last_queued_id] = work;
-		chip->last_queued_id++;
-		chip->last_queued_id &= JOB_ID_NUM_MASK;
+		applog(LOG_WARNING, "%d: succeed to write a new job %d\n", cid, job_id);
+		btc08->work[btc08->last_queued_id] = work;
+		btc08->last_queued_id++;
+		btc08->last_queued_id &= JOB_ID_NUM_MASK;
 	}
-
-#if 0
-	// for debugging?
-	int i;
-	for (i = btc08->last_chip; i < btc08->num_chips; i++) {
-		chip_id = i +1;
-		if(btc08->last_chip)
-			chip_id +=  (1-btc08->last_chip);
-		exec_cmd(btc08, SPI_CMD_READ_ID, chip_id, NULL, 0, 4);
-	}
-#endif
-
 	return retval;
 }
 
@@ -1657,65 +1633,55 @@ static bool get_nonce(struct btc08_chain *btc08, uint8_t *nonce,
 		      uint8_t *chip, uint8_t *job_id, uint8_t *micro_job_id)
 {
 	uint8_t *ret;
+	uint8_t gn_irq = 0x00, gn_job_id = 0x00, chip_id = 0x00;
+	int cid = btc08->chain_id;
 
-	if(0 != get_gpio_value(btc08->pinnum_gpio_gn)) return false;
-
+	// READ_JOB_ID to read job status
 	do {
 		ret = cmd_READ_JOB_ID_BCAST(btc08);
 		if (ret == NULL)
 			return false;
+
+		gn_job_id  = ret[1];
+		gn_irq 	   = ret[2] & (1<<0);
+		chip_id    = ret[3];
+
+		// ret[2]&3: Result FIFO Full, OON IRQ, GN IRQ Flag
 		if ((ret[2]&3) == 0) {
-			applog(LOG_DEBUG, "%d: output queue empty(1)", btc08->chain_id);
+			applog(LOG_DEBUG, "%d: output queue empty(1)", cid);
 			return false;
 		}
 		uint32_t *ret32 = (uint32_t *)ret;
 		if (*ret32 == 0xffffffff) {
-	//		applog(LOG_DEBUG, "%d: output queue empty(0)", btc08->chain_id);
+			applog(LOG_DEBUG, "%d: output queue empty(0)", cid);
 			return false;
 		}
-		// oon?
-		if ((ret[2]&(1<<1)) != 0) {
-			// clear interrupt
-			applog(LOG_DEBUG, "%d: clear OON; ret:%02x %02x %02x %02x", btc08->chain_id, ret[0], ret[1], ret[2], ret[3]);
-			ret = cmd_CLEAR_OON(btc08, 0);
-			continue;
-		}
-		// golden nonce
-		if ((ret[2]&(1<<0)) != 0) {
-			uint32_t *real_nonce;
-			int cid = btc08->chain_id;
+
+		// In case that GN IRQ is set
+		if (0 != gn_irq) {
 			uint32_t *nonce32 = (uint32_t *)nonce;
-			int ii;
 			uint32_t *ret32 = (uint32_t *)ret;
-			applog(LOG_DEBUG, "%d: GN; ret:%02x %02x %02x %02x", btc08->chain_id, ret[0], ret[1], ret[2], ret[3]);
-			applog(LOG_DEBUG, "%d: job 0x%x: golden nonce(chip%d)", btc08->chain_id, ret[1], ret[3]);
-			// clear interrupt
-			*job_id = ret[1];
-			*chip = ret[3];
-//			ret = cmd_READ_PARM(btc08, *chip);
-//			ret = cmd_READ_HASH(btc08, *chip);
+
+			applog(LOG_DEBUG, "%d: GN; %02x %02x %02x %02x", cid, ret[0], ret[1], ret[2], ret[3]);
+			applog(LOG_DEBUG, "%d: gn_job_id(%d): chip_id(%d)", cid, gn_job_id, chip_id);
+
+			*job_id = gn_job_id;
+			*chip 	= chip_id;
+
+			// READ_HASH to read
+			ret = cmd_READ_HASH(btc08, *chip);
+
+			// READ_RESULT to read GN and clear GN IRQ
 			ret = cmd_READ_RESULT(btc08, *chip);
+			*micro_job_id = ret[17];		// [3:0]: lower3/lower2/lower/upper GN
 
-			*micro_job_id = ret[17];
-
-			/*
-			for(ii=0; ii<4; ii++, ret+=4, nonce+=4) {
-				*ret32 = bswap_32(*ret32);
-				*ret32 -= (btc08->chips[*chip-1].hash_depth*btc08->chips[*chip-1].num_cores);
-				*nonce32 = bswap_32(*ret32);
-			}
-			*/
-
+			ret32 = (uint32_t *)&(ret[0]);
+			for (int i=0; i<ASIC_BOOST_CORE_NUM; i++)
 			{
-				nonce32[0] = ret32[0];
-				nonce32[1] = ret32[1];
-				nonce32[2] = ret32[2];
-				nonce32[3] = ret32[3];
+				nonce32[i] = ret32[i];
 				applog(LOG_DEBUG, "%d: ret32 = 0x%08x, 0x%08x, 0x%08x, 0x%08x", cid, ret32[0], ret32[1], ret32[2], ret32[3]);
 			}
 			applog(LOG_DEBUG, "%d: nonce = 0x%08x, 0x%08x, 0x%08x, 0x%08x", cid, nonce32[0], nonce32[1], nonce32[2], nonce32[3]);
-
-//			cmd_READ_HASH(btc08, *chip);
 
 			return true;
 		}
@@ -1735,6 +1701,7 @@ static bool abort_work(struct btc08_chain *btc08)
 
 	btc08->num_cores = 0;
 	btc08->perf = 0;
+	btc08->is_processing_job = false;
 	cmd_BIST_BCAST(btc08, BCAST_CHIP_ID);
 
 	for (i = (btc08->num_chips-1); i>=0; i--) {
@@ -2043,6 +2010,7 @@ struct btc08_chain *init_btc08_chain(struct spi_ctx *ctx, int chain_id)
 	memset(btc08, 0, sizeof(*btc08));
 	btc08->spi_ctx = ctx;
 	btc08->chain_id = chain_id;
+	btc08->is_processing_job = false;
 
 	for(i=0; i<MAX_SPI_PORT; i++) {
 		if(ctx->config.bus == spi_available_bus[i])
@@ -2105,6 +2073,10 @@ struct btc08_chain *init_btc08_chain(struct spi_ctx *ctx, int chain_id)
 
 	// Enable OON IRQ & Set UART divider (TODO: Need to check if uart divider value is correct!)
 	set_control(btc08, BCAST_CHIP_ID, (OON_IRQ_EN | btc08_config_options.udiv));
+
+	/* In order to reduce the number of spi calls that distribute the nonce range to each chip,
+	 * it is executed only once after bist */
+	calc_nonce_range(btc08);
 
 	applog(LOG_DEBUG, "perf = %ld\n", btc08->perf);
 
@@ -2306,122 +2278,146 @@ static int64_t btc08_scanwork(struct thr_info *thr)
 	int i, ii;
 	struct cgpu_info *cgpu = thr->cgpu;
 	struct btc08_chain *btc08 = cgpu->device_data;
+	int cid = btc08->chain_id;
 	int32_t nonce_ranges_processed = 0;
+	uint32_t nonce[4];
+	uint8_t chip_id, job_id, micro_job_id;
+	bool ishashdone = false;
+	uint8_t *res;
+	uint8_t oon_job_id, chipId, oon_irq, fifo_full;
 
-	if (btc08->num_cores == 0) {
+	if ((0 == btc08->num_cores) || (MAX_CORES < btc08->num_cores)) {
 		cgpu->deven = DEV_DISABLED;
+		applog(LOG_ERR, "wrong num_cores", btc08->chain_id);
 		reinit_chain(btc08);
 		return 0;
 	}
+
 	if (btc08->disabled) {
 		cgpu->deven = DEV_DISABLED;
+		applog(LOG_ERR, "chain%d is disabled", cid);
 		reinit_chain(btc08);
 		return 0;
 	}
-//	board_selector->select(btc08->chain_id);
 
 //	applog(LOG_DEBUG, "BTC08 running scanwork");
 
-	uint32_t nonce[4];
-	uint8_t chip_id;
-	uint8_t job_id;
-	uint8_t micro_job_id;
-	bool work_updated = false;
-
 	mutex_lock(&btc08->lock);
 
-	int cid = btc08->chain_id;
-	/* poll queued results */
-	while (true) {
-		if (!get_nonce(btc08, (uint8_t*)&nonce[0], &chip_id, &job_id, &micro_job_id))
-			break;
-		work_updated = true;
-		if (chip_id < 1 || chip_id > btc08->num_active_chips) {
-			applog(LOG_WARNING, "%d: wrong chip_id %d",
-			       cid, chip_id);
-			continue;
-		}
-		if (job_id < 1 && job_id > MAX_JOB_ID_NUM) {
-			applog(LOG_WARNING, "%d: chip %d: result has wrong "
-			       "job_id %d", cid, chip_id, job_id);
-			flush_spi(btc08);
-			continue;
-		}
+	if (!btc08->is_processing_job)
+	{
+		applog(LOG_WARNING, "cid %d: job fifo is empty!", cid);
 
-		struct btc08_chip *chip = &btc08->chips[btc08->num_chips-1];
-		struct work *work = chip->work[job_id - 1];
-		chip = &btc08->chips[chip_id - 1];
-		if (work == NULL) {
-			/* already been flushed => stale */
-			applog(LOG_WARNING, "%d: chip %d: stale nonce 0x%08x 0x%08x 0x%08x 0x%08x",
-			       cid, chip_id, nonce[0], nonce[1], nonce[2], nonce[3]);
-			chip->stales++;
-			continue;
-		}
-		for(ii=0; ii<4; ii++) {
-			if((micro_job_id & (1<<ii)) != 0) {
-				work->micro_job_id = (1<<ii);
-				memcpy(work->data, &(work->pool->vmask_001[(1<<ii)]), 4);
-				if (!submit_nonce(thr, work, nonce[ii])) {
-					applog(LOG_WARNING, "%d: chip %d(micro_jobid %d): invalid nonce 0x%08x",
-						   cid, chip_id, work->micro_job_id, nonce[ii]);
-					chip->hw_errors++;
-					/* add a penalty of a full nonce range on HW errors */
-					nonce_ranges_processed--;
-					continue;
-				}
-				applog(LOG_DEBUG, "YEAH: %d: chip %d / job_id %d(micro_job_id %d): nonce 0x%08x",
-					   cid, chip_id, job_id, work->micro_job_id, nonce[ii]);
-				chip->nonces_found++;
+		// Try to run first 4 works
+		for (int i=0; i<MAX_JOB_FIFO ; i++)
+		{
+			struct work *work = wq_dequeue(&btc08->active_wq);
+			if (work == NULL) {
+				applog(LOG_WARNING, "%d: work underflow", cid);
+				goto failure;
+			}
+
+			set_work(btc08, work);
+			if (btc08->disabled) {
+				applog(LOG_ERR, "chain%d is disabled", cid);
+				goto failure;
+			} else {
+				btc08->is_processing_job = true;
 			}
 		}
 	}
 
-	/* check for completed works */
-	for (i = 0; i<2; i++) {
-		if(1 == get_gpio_value(btc08->pinnum_gpio_oon))
+	/* poll queued results */
+	while (!ishashdone) {
+		// Check GN GPIO Pin
+		if(0 == get_gpio_value(btc08->pinnum_gpio_gn))
 		{
-			cgtimer_t ts_now, ts_diff;
-			cgsleep_ms(500);
-			exec_cmd(btc08, SPI_CMD_READ_ID, 1, NULL, 0, RET_READ_ID_LEN);
-			exec_cmd(btc08, SPI_CMD_READ_ID, 2, NULL, 0, RET_READ_ID_LEN);
-			exec_cmd(btc08, SPI_CMD_READ_ID, 3, NULL, 0, RET_READ_ID_LEN);
-			cgtimer_time(&ts_now);
-			cgtimer_sub(&ts_now, &btc08->oon_begin, &ts_diff);
-			if (cgtimer_to_ms(&ts_diff) > btc08->timeout_oon) {
-				applog(LOG_DEBUG, "start: %ld, now: %ld, diff: %ld", cgtimer_to_ms(&btc08->oon_begin), cgtimer_to_ms(&ts_now), cgtimer_to_ms(&ts_diff));
-				check_disabled_chips(btc08);
+			applog(LOG_WARNING, ">>>>>>>>>>>>>>>>> GN IRQ!!!! >>>>>>>>>>>>>>>>>");
+			if (get_nonce(btc08, (uint8_t*)&nonce[0], &chip_id, &job_id, &micro_job_id))
+			{
+				if (chip_id < 1 || chip_id > btc08->num_active_chips) {
+					applog(LOG_WARNING, "%d: wrong chip_id %d",
+						cid, chip_id);
+					continue;
+				}
+				if (job_id < 1 && job_id > MAX_JOB_ID_NUM) {
+					applog(LOG_WARNING, "%d: chip %d: result has wrong "
+						"job_id %d", cid, chip_id, job_id);
+					flush_spi(btc08);
+					continue;
+				}
+
+				struct btc08_chip *chip = &btc08->chips[btc08->num_chips-1];
+				struct work *work = btc08->work[job_id - 1];
+				chip = &btc08->chips[chip_id - 1];
+				if (work == NULL) {
+					// already been flushed => stale
+					applog(LOG_WARNING, "%d: chip %d: stale nonce 0x%08x 0x%08x 0x%08x 0x%08x",
+						cid, chip_id, nonce[0], nonce[1], nonce[2], nonce[3]);
+					chip->stales++;
+					continue;
+				}
+
+				// submit nonce
+				for(ii=0; ii<4; ii++) {
+					if((micro_job_id & (1<<ii)) != 0) {
+						work->micro_job_id = (1<<ii);
+						if (work->pool->vmask)
+							memcpy(work->data, &(work->pool->vmask_001[(1<<ii)]), 4);
+						if (!submit_nonce(thr, work, nonce[ii])) {
+							applog(LOG_WARNING, "%d: chip %d(micro_jobid %d): invalid nonce 0x%08x",
+								cid, chip_id, work->micro_job_id, nonce[ii]);
+							chip->hw_errors++;
+							/* add a penalty of a full nonce range on HW errors */
+							nonce_ranges_processed--;
+							continue;
+						}
+						applog(LOG_DEBUG, "YEAH: %d: chip %d / job_id %d(micro_job_id %d): nonce 0x%08x",
+							cid, chip_id, job_id, work->micro_job_id, nonce[ii]);
+						chip->nonces_found++;
+					}
+				}
+			}
+		}
+
+		// Check OON GPIO Pin
+		if(0 == get_gpio_value(btc08->pinnum_gpio_oon))
+		{
+			res = exec_cmd(btc08, SPI_CMD_READ_JOB_ID, BCAST_CHIP_ID, NULL, 0, RET_READ_JOB_ID_LEN);
+			oon_job_id = res[0];
+			chipId     = res[3];
+			oon_irq	   = res[2] & (1<<1);
+			fifo_full  = res[2] & (1<<2);
+
+			if (0 != oon_irq)
+			{
+				applog(LOG_DEBUG, ">>>>>>>>>>>>>>>>> OON IRQ!!!! (oon_job_id=%d on chip#%d)", oon_job_id, chipId);
+
+				cmd_CLEAR_OON(btc08, BCAST_CHIP_ID);
+				nonce_ranges_processed++;
+				ishashdone = true;
+				applog(LOG_DEBUG, "%d: job done ", cid);
+
+				struct work *work = wq_dequeue(&btc08->active_wq);
+				if (work == NULL) {
+					applog(LOG_INFO, "%d: work underflow", cid);
+					break;
+				}
+				set_work(btc08, work);
+				if (btc08->disabled) {
+					applog(LOG_ERR, "chain%d is disabled", cid);
+					goto failure;
+				} else {
+					btc08->is_processing_job = true;
+				}
 				break;
 			}
-			else continue;
 		}
 
-		cgtimer_time(&btc08->oon_begin);
-
-		applog(LOG_DEBUG, "cid %d: job fifo not full ", cid);
-
-		work_updated = true;
-
-		struct work *work = wq_dequeue(&btc08->active_wq);
-		if (work == NULL) {
-			applog(LOG_INFO, "%d: work underflow",
-				   cid);
-			break;
-		}
-		if (set_work(btc08, work)) {
-//			chip->nonce_ranges_done++;
-			nonce_ranges_processed++;
-		}
-		applog(LOG_DEBUG, "%d: job done ",
-			   cid
-//			   chip->nonce_ranges_done, chip->nonces_found,
-//			   chip->hw_errors, chip->stales
-			   );
+		sched_yield();
 	}
 
 	mutex_unlock(&btc08->lock);
-
-//	board_selector->release();
 
 	if (nonce_ranges_processed < 0)
 		nonce_ranges_processed = 0;
@@ -2430,11 +2426,16 @@ static int64_t btc08_scanwork(struct thr_info *thr)
 		applog(LOG_DEBUG, "%d, nonces processed %d",
 		       cid, nonce_ranges_processed);
 	}
-	/* in case of no progress, prevent busy looping */
-//	if (!work_updated)
-//		cgsleep_us(40);
 
-	return (int64_t)nonce_ranges_processed << 32;
+#if defined(USE_BTC08_FPGA)
+	return ((int64_t)nonce_ranges_processed << 24) * 8 * ASIC_BOOST_CORE_NUM;	// nonce range : 128M
+#else
+	return ((int64_t)nonce_ranges_processed << 32) * ASIC_BOOST_CORE_NUM;		// nonce range : 4G
+#endif
+
+failure:
+	mutex_unlock(&btc08->lock);
+	return 0;
 }
 
 
@@ -2462,11 +2463,8 @@ static void btc08_flush_work(struct cgpu_info *cgpu)
 {
 	struct btc08_chain *btc08 = cgpu->device_data;
 	int cid = btc08->chain_id;
-//	board_selector->select(cid);
 
 	applog(LOG_DEBUG, "%d: BTC08 running flushwork", cid);
-
-	int i;
 
 	mutex_lock(&btc08->lock);
 	/* stop chips hashing current work */
@@ -2474,20 +2472,17 @@ static void btc08_flush_work(struct cgpu_info *cgpu)
 		applog(LOG_ERR, "%d: failed to abort work in chip chain!", cid);
 	}
 	/* flush the work chips were currently hashing */
-	for (i = btc08->last_chip; i < btc08->num_chips; i++) {
-		int j;
-		struct btc08_chip *chip = &btc08->chips[i];
-		for (j = 0; j < MAX_JOB_ID_NUM; j++) {
-			struct work *work = chip->work[j];
+	for (int i = btc08->last_chip; i < btc08->num_chips; i++) {
+		for (int j = 0; j < MAX_JOB_ID_NUM; j++) {
+			struct work *work = btc08->work[j];
 			if (work == NULL)
 				continue;
 			applog(LOG_DEBUG, "%d: flushing chip %d, work %d: 0x%p",
 			       cid, i, j + 1, work);
 			work_completed(cgpu, work);
-			chip->work[j] = NULL;
-//			btc08->chips[i].busy_job_id_flag[j] = 0;
+			btc08->work[j] = NULL;
 		}
-		chip->last_queued_id = 0;
+		btc08->last_queued_id = 0;
 	}
 	/* flush queued work */
 	applog(LOG_DEBUG, "%d: flushing queued work...", cid);
@@ -2498,8 +2493,6 @@ static void btc08_flush_work(struct cgpu_info *cgpu)
 	}
 	btc08->sdiff = 0;
 	mutex_unlock(&btc08->lock);
-
-//	board_selector->release();
 }
 
 static void btc08_get_statline_before(char *buf, size_t len,
