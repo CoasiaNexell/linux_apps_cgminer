@@ -22,7 +22,6 @@ struct work_queue {
 #if defined(USE_BTC08_FPGA)
 #define MAX_CHIP_NUM			3
 #define MAX_CORES_PER_CHIP		2
-#define FPGA_MINER_CORE_CLK		50		// 50 MHz
 #define MAX_SPI_PORT			1
 // Hash should be done within 1 second
 #define MAX_NONCE_SIZE			(0x07ffffff)
@@ -32,6 +31,7 @@ struct work_queue {
 #define MAX_SPI_PORT			2
 #define MAX_NONCE_SIZE			(0xffffffff)
 #endif
+#define FPGA_MINER_CORE_CLK		50		// 50 MHz
 
 #define MAX_CORES				(MAX_CHIP_NUM * MAX_CORES_PER_CHIP)
 #define DEFAULT_MIN_CORES		(MAX_CORES_PER_CHIP*0.9)
