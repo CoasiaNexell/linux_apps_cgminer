@@ -305,7 +305,7 @@ static uint8_t *exec_cmd(struct btc08_chain *btc08,
 			  uint8_t resp_len)
 {
 	int ii;
-	int tx_len = ALIGN((CMD_CHIP_ID_LEN + parm_len + resp_len), 4);
+	int tx_len = ALIGN((CMD_CHIP_ID_LEN + parm_len + resp_len + DUMMY_BYTES), 4);
 	bool ret;
 	memset(btc08->spi_tx, 0, tx_len);
 	btc08->spi_tx[0] = cmd;
@@ -525,7 +525,7 @@ static uint8_t *cmd_RESET_BCAST(struct btc08_chain *btc08)
 
 static uint8_t *cmd_READ_JOB_ID_BCAST(struct btc08_chain *btc08)
 {
-	int tx_len = ALIGN(CMD_CHIP_ID_LEN + RET_READ_JOB_ID_LEN, 4);
+	int tx_len = ALIGN(CMD_CHIP_ID_LEN + RET_READ_JOB_ID_LEN + DUMMY_BYTES, 4);
 	bool ret;
 	memset(btc08->spi_tx, 0, tx_len);
 	btc08->spi_tx[0] = SPI_CMD_READ_JOB_ID;
@@ -548,7 +548,7 @@ static uint8_t *cmd_READ_JOB_ID_BCAST(struct btc08_chain *btc08)
 
 static uint8_t *cmd_READ_RESULT(struct btc08_chain *btc08, uint8_t chip_id)
 {
-	int tx_len = ALIGN(CMD_CHIP_ID_LEN + RET_READ_RESULT_LEN, 4);
+	int tx_len = ALIGN(CMD_CHIP_ID_LEN + RET_READ_RESULT_LEN + DUMMY_BYTES, 4);
 	bool ret;
 	memset(btc08->spi_tx, 0, tx_len);
 	btc08->spi_tx[0] = SPI_CMD_READ_RESULT;
@@ -571,7 +571,7 @@ static uint8_t *cmd_READ_RESULT(struct btc08_chain *btc08, uint8_t chip_id)
 
 static uint8_t *cmd_CLEAR_OON(struct btc08_chain *btc08, uint8_t chip_id)
 {
-	int tx_len = ALIGN(CMD_CHIP_ID_LEN, 4);
+	int tx_len = ALIGN(CMD_CHIP_ID_LEN + DUMMY_BYTES, 4);
 	bool ret;
 	memset(btc08->spi_tx, 0, tx_len);
 	btc08->spi_tx[0] = SPI_CMD_CLEAR_OON;
@@ -593,7 +593,7 @@ static uint8_t *cmd_CLEAR_OON(struct btc08_chain *btc08, uint8_t chip_id)
 
 static uint8_t *cmd_READ_HASH(struct btc08_chain *btc08, uint8_t chip_id)
 {
-	int tx_len = ALIGN(CMD_CHIP_ID_LEN + RET_READ_HASH_LEN, 4);
+	int tx_len = ALIGN(CMD_CHIP_ID_LEN + RET_READ_HASH_LEN + DUMMY_BYTES, 4);
 	bool ret;
 	memset(btc08->spi_tx, 0, tx_len);
 	btc08->spi_tx[0] = SPI_CMD_READ_HASH;
@@ -615,7 +615,7 @@ static uint8_t *cmd_READ_HASH(struct btc08_chain *btc08, uint8_t chip_id)
 
 static uint8_t *cmd_READ_PARM(struct btc08_chain *btc08, uint8_t chip_id)
 {
-	int tx_len = ALIGN((CMD_CHIP_ID_LEN + WRITE_JOB_LEN), 4);
+	int tx_len = ALIGN((CMD_CHIP_ID_LEN + WRITE_JOB_LEN + DUMMY_BYTES), 4);
 	bool ret;
 	memset(btc08->spi_tx, 0, tx_len);
 	btc08->spi_tx[0] = SPI_CMD_READ_PARM;
@@ -679,7 +679,7 @@ static uint8_t cmd_WRITE_JOB_test(struct btc08_chain *btc08, uint8_t job_id, uin
 
 	int tx_len;
 
-	tx_len = ALIGN((CMD_CHIP_ID_LEN + WRITE_JOB_LEN), 4);
+	tx_len = ALIGN((CMD_CHIP_ID_LEN + WRITE_JOB_LEN + DUMMY_BYTES), 4);
 	// WRITE_PARM
 	hexdump("send: TX", spi_tx, tx_len);
 	xfr[0].tx_buf = (unsigned long)spi_tx;
@@ -694,8 +694,7 @@ static uint8_t cmd_WRITE_JOB_test(struct btc08_chain *btc08, uint8_t job_id, uin
 	spi_tx += tx_len;
 
 	// CLEAR_OON
-	tx_len = CMD_CHIP_ID_LEN;
-
+	tx_len = ALIGN((CMD_CHIP_ID_LEN + DUMMY_BYTES), 4);
 	spi_tx[0] = SPI_CMD_CLEAR_OON;
 	spi_tx[1] = 0;
 	hexdump("send: TX", spi_tx, tx_len);
@@ -713,7 +712,7 @@ static uint8_t cmd_WRITE_JOB_test(struct btc08_chain *btc08, uint8_t job_id, uin
 	ii = 2;
 
 	// WRITE_TARGET
-	tx_len = CMD_CHIP_ID_LEN + TARGET_LEN;
+	tx_len = ALIGN((CMD_CHIP_ID_LEN + TARGET_LEN + DUMMY_BYTES), 4);
 	spi_tx[0] = SPI_CMD_WRITE_TARGET;
 	spi_tx[1] = 0;
 	spi_tx[2] = 0x19;
@@ -738,7 +737,7 @@ static uint8_t cmd_WRITE_JOB_test(struct btc08_chain *btc08, uint8_t job_id, uin
 	spi_tx += tx_len;
 
 	// RUN_JOB
-	tx_len = CMD_CHIP_ID_LEN + JOB_ID_LEN;
+	tx_len = ALIGN((CMD_CHIP_ID_LEN + JOB_ID_LEN + DUMMY_BYTES), 4);
 	spi_tx[0] = SPI_CMD_RUN_JOB;
 	spi_tx[1] = chip_id;
 	spi_tx[2] = 0;
@@ -779,7 +778,7 @@ static uint8_t cmd_WRITE_JOB_fast(struct btc08_chain *btc08,
 
 	int tx_len;
 
-	tx_len = ALIGN((CMD_CHIP_ID_LEN + WRITE_JOB_LEN), 4);
+	tx_len = ALIGN((CMD_CHIP_ID_LEN + WRITE_JOB_LEN + DUMMY_BYTES), 4);
 
 	// WRITE_PARM
 	hexdump("send: TX", spi_tx, tx_len);
@@ -804,7 +803,7 @@ static uint8_t cmd_WRITE_JOB_fast(struct btc08_chain *btc08,
 	// WRITE_TARGET
 	if(btc08->sdiff != work->sdiff)
 	{
-		tx_len = ALIGN((CMD_CHIP_ID_LEN + TARGET_LEN), 4);
+		tx_len = ALIGN((CMD_CHIP_ID_LEN + TARGET_LEN + DUMMY_BYTES), 4);
 		btc08->sdiff = work->sdiff;
 		/* target */
 		uint32_t nbits = nbits_from_target(work->target);
@@ -1159,7 +1158,7 @@ static bool calc_nonce_range(struct btc08_chain *btc08)
 		spi_tx[1] = ii+1;
 		spi_tx[10] = 0;
 
-		tx_len = CMD_CHIP_ID_LEN + (NONCE_LEN*2);
+		tx_len = ALIGN((CMD_CHIP_ID_LEN + (NONCE_LEN*2) + DUMMY_BYTES), 4);
 		ret = spi_transfer(btc08->spi_ctx, btc08->spi_tx, btc08->spi_rx, tx_len);
 		for(int i=0; i<tx_len; i++) btc08->spi_rx[i] ^= 0xff;
 		hexdump("send: TX", btc08->spi_tx, tx_len);
@@ -1203,7 +1202,7 @@ static int test_spi_seq(struct btc08_chain *btc08)
 	int tx_len;
 	int param_len = 0, resp_len = 4;
 
-	tx_len = ALIGN((CMD_CHIP_ID_LEN + param_len + resp_len), 4);
+	tx_len = ALIGN((CMD_CHIP_ID_LEN + param_len + resp_len + DUMMY_BYTES), 4);
 	for (ii=0; ii<btc08->num_active_chips; ii++) {
 		memset(spi_tx, 0, tx_len);
 		memset(spi_rx, 0, tx_len);
