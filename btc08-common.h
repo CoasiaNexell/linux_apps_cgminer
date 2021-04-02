@@ -44,30 +44,32 @@ struct work_queue {
 
 /********** chip and chain context structures */
 /* the WRITE_JOB command is the largest (2 bytes command, 56 bytes payload) */
-#define MIDSTATE_LEN		32		// 256 bits
+#define MIDSTATE_LEN            32		// 256 bits
 // MerkleRoot + timestamp + difficulty
-#define DATA_LEN			12		// 96 bits
+#define DATA_LEN                12		// 96 bits
 
-#define ASIC_BOOST_CORE_NUM	4
+#define ASIC_BOOST_CORE_NUM     4
 
-#define DISABLE_LEN			32
-#define HASH_LEN			32
-#define NONCE_LEN			4
-#define TARGET_LEN			6
-#define PLL_VALUE_LEN 		2
-#define JOB_ID_LEN			2
-#define DUMMY_BYTES			2
+#define DISABLE_LEN             32
+#define HASH_LEN                32
+#define NONCE_LEN               4
+#define TARGET_LEN              6
+#define PLL_VALUE_LEN           2
+#define JOB_ID_LEN              2
+#define BIST_HASH_LEN          (1024/8)
+#define DUMMY_BYTES             2
 
 // midstate + data + midstate + midstate + midstate
-#define WRITE_JOB_LEN		(((ASIC_BOOST_CORE_NUM * MIDSTATE_LEN) + DATA_LEN))
-#define MAX_CHAIN_LEN		256
+#define WRITE_JOB_LEN          (((ASIC_BOOST_CORE_NUM * MIDSTATE_LEN) + DATA_LEN))
+#define MAX_CHAIN_LEN          256
+
 /*
  * For commands to traverse the chain, we need to issue dummy writes to
  * keep SPI clock running. To reach the last chip in the chain, we need to
  * write the command, followed by chain-length words to pass it through the
  * chain and another chain-length words to get the ACK back to host
  */
-#define MAX_CMD_LENGTH			(1024)	// param + command
+#define MAX_CMD_LENGTH         (1024)	// CMD(8)+CHIPID(8)+READ_PARM(1120)
 
 #define RET_AUTO_ADDRESS_LEN	2		// 16 bits
 #define RET_READ_ID_LEN			4		// 32 bits
@@ -81,7 +83,7 @@ struct work_queue {
 #define RET_READ_REVISION_LEN	4		// 32 bits
 
 #define FEATURE_FOR_FPGA		0x0
-#define FEATURE_for_ASIC		0x5
+#define FEATURE_FOR_ASIC		0x5
 
 #define BIST_STATUS_IDLE		0
 #define BIST_STATUS_BUSY		1
