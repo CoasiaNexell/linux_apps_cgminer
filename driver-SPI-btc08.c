@@ -75,7 +75,11 @@ static int spi_idx = 0;
  * - 2000 kHz SPI clock
  */
 struct btc08_config_options btc08_config_options = {
-	.pll = 550, .udiv = (16+1), .spi_clk_khz = 500, .min_cores = DEFAULT_MIN_CORES, .min_chips = DEFAULT_MIN_CHIPS,
+	.pll = 550,
+	.udiv = (16+1),
+	.spi_clk_khz = 2000,             // 2 MHz (minimum spi clock: 1.2 MHz)
+	.min_cores = DEFAULT_MIN_CORES,
+	.min_chips = DEFAULT_MIN_CHIPS,
 };
 
 /* override values with --bitmine-btc08-options ref:sys:spi: - use 0 for default */
@@ -687,7 +691,7 @@ static uint8_t cmd_WRITE_JOB_test(struct btc08_chain *btc08, uint8_t job_id, uin
 	xfr[0].tx_buf = (unsigned long)spi_tx;
 	xfr[0].rx_buf = (unsigned long)NULL;
 	xfr[0].len = tx_len;
-	xfr[0].speed_hz = btc08->spi_ctx->config.speed*20;
+	xfr[0].speed_hz = MAX_TX_SPI_SPEED;
 	xfr[0].delay_usecs = btc08->spi_ctx->config.delay;
 	xfr[0].bits_per_word = btc08->spi_ctx->config.bits;
 	xfr[0].tx_nbits = 0;
@@ -703,7 +707,7 @@ static uint8_t cmd_WRITE_JOB_test(struct btc08_chain *btc08, uint8_t job_id, uin
 	xfr[1].tx_buf = (unsigned long)spi_tx;
 	xfr[1].rx_buf = (unsigned long)NULL;
 	xfr[1].len = tx_len;
-	xfr[1].speed_hz = btc08->spi_ctx->config.speed*20;
+	xfr[1].speed_hz = MAX_TX_SPI_SPEED;
 	xfr[1].delay_usecs = btc08->spi_ctx->config.delay;
 	xfr[1].bits_per_word = btc08->spi_ctx->config.bits;
 	xfr[1].tx_nbits = 0;
@@ -728,7 +732,7 @@ static uint8_t cmd_WRITE_JOB_test(struct btc08_chain *btc08, uint8_t job_id, uin
 	xfr[ii].tx_buf = (unsigned long)spi_tx;
 	xfr[ii].rx_buf = (unsigned long)NULL;
 	xfr[ii].len = tx_len;
-	xfr[ii].speed_hz = btc08->spi_ctx->config.speed*20;
+	xfr[ii].speed_hz = MAX_TX_SPI_SPEED;
 	xfr[ii].delay_usecs = btc08->spi_ctx->config.delay;
 	xfr[ii].bits_per_word = btc08->spi_ctx->config.bits;
 	xfr[ii].tx_nbits = 0;
@@ -748,7 +752,7 @@ static uint8_t cmd_WRITE_JOB_test(struct btc08_chain *btc08, uint8_t job_id, uin
 	xfr[ii].tx_buf = (unsigned long)spi_tx;
 	xfr[ii].rx_buf = (unsigned long)NULL;
 	xfr[ii].len = tx_len;
-	xfr[ii].speed_hz = btc08->spi_ctx->config.speed*20;
+	xfr[ii].speed_hz = MAX_TX_SPI_SPEED;
 	xfr[ii].delay_usecs = btc08->spi_ctx->config.delay;
 	xfr[ii].bits_per_word = btc08->spi_ctx->config.bits;
 	xfr[ii].tx_nbits = 0;
@@ -787,11 +791,7 @@ static uint8_t cmd_WRITE_JOB_fast(struct btc08_chain *btc08,
 	xfr[0].tx_buf = (unsigned long)spi_tx;
 	xfr[0].rx_buf = (unsigned long)NULL;
 	xfr[0].len = tx_len;
-#if !defined(USE_BTC08_FPGA)
-	xfr[0].speed_hz = btc08->spi_ctx->config.speed*20;
-#else
-	xfr[0].speed_hz = btc08->spi_ctx->config.speed*2;
-#endif
+	xfr[0].speed_hz = MAX_TX_SPI_SPEED;
 	xfr[0].delay_usecs = btc08->spi_ctx->config.delay;
 	xfr[0].bits_per_word = btc08->spi_ctx->config.bits;
 	xfr[0].cs_change = 1;
@@ -827,11 +827,7 @@ static uint8_t cmd_WRITE_JOB_fast(struct btc08_chain *btc08,
 		xfr[ii].tx_buf = (unsigned long)spi_tx;
 		xfr[ii].rx_buf = (unsigned long)NULL;
 		xfr[ii].len = tx_len;
-#if !defined(USE_BTC08_FPGA)
-		xfr[ii].speed_hz = btc08->spi_ctx->config.speed*20;
-#else
-		xfr[ii].speed_hz = btc08->spi_ctx->config.speed*2;
-#endif
+		xfr[ii].speed_hz = MAX_TX_SPI_SPEED;
 		xfr[ii].delay_usecs = btc08->spi_ctx->config.delay;
 		xfr[ii].bits_per_word = btc08->spi_ctx->config.bits;
 		xfr[ii].cs_change = 1;
@@ -856,11 +852,7 @@ static uint8_t cmd_WRITE_JOB_fast(struct btc08_chain *btc08,
 	xfr[ii].tx_buf = (unsigned long)spi_tx;
 	xfr[ii].rx_buf = (unsigned long)NULL;
 	xfr[ii].len = tx_len;
-#if !defined(USE_BTC08_FPGA)
-	xfr[ii].speed_hz = btc08->spi_ctx->config.speed*20;
-#else
-	xfr[ii].speed_hz = btc08->spi_ctx->config.speed*2;
-#endif
+	xfr[ii].speed_hz = MAX_TX_SPI_SPEED;
 	xfr[ii].delay_usecs = btc08->spi_ctx->config.delay;
 	xfr[ii].bits_per_word = btc08->spi_ctx->config.bits;
 	xfr[ii].cs_change = 1;
@@ -1214,11 +1206,7 @@ static int test_spi_seq(struct btc08_chain *btc08)
 		xfr[ii].tx_buf = (unsigned long)spi_tx;
 		xfr[ii].rx_buf = (unsigned long)spi_rx;
 		xfr[ii].len = tx_len;
-#if !defined(USE_BTC08_FPGA)
-		xfr[ii].speed_hz = btc08->spi_ctx->config.speed*20;
-#else
-		xfr[ii].speed_hz = btc08->spi_ctx->config.speed*2;
-#endif
+		xfr[ii].speed_hz = MAX_TX_SPI_SPEED;
 		xfr[ii].delay_usecs = btc08->spi_ctx->config.delay;
 		xfr[ii].bits_per_word = btc08->spi_ctx->config.bits;
 		xfr[ii].cs_change = 1;
