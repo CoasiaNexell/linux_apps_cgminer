@@ -5,6 +5,7 @@
 #include <linux/spi/spidev.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include "config.h"
 
 #define SPI_DEVICE_TEMPLATE		"/dev/spidev%d.%d"
 #define DEFAULT_SPI_BUS			0
@@ -13,6 +14,13 @@
 #define DEFAULT_SPI_BITS_PER_WORD	8
 #define DEFAULT_SPI_SPEED		1500000
 #define DEFAULT_SPI_DELAY_USECS		0
+#if defined(USE_BTC08)
+#if defined(USE_BTC08_FPGA)
+#define MAX_TX_SPI_SPEED         (1*1000*1000)       //  1 MHz
+#else
+#define MAX_TX_SPI_SPEED         (10*1000*1000)      // 10 MHz
+#endif
+#endif
 
 struct spi_config {
 	int bus;

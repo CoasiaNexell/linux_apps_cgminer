@@ -122,7 +122,7 @@ extern bool spi_transfer_x20(struct spi_ctx *ctx, uint8_t *txbuf,
 	xfr.tx_buf = (unsigned long)txbuf;
 	xfr.rx_buf = (unsigned long)rxbuf;
 	xfr.len = len;
-	xfr.speed_hz = ctx->config.speed*20;
+	xfr.speed_hz = MAX_TX_SPI_SPEED;
 	xfr.delay_usecs = ctx->config.delay;
 	xfr.bits_per_word = ctx->config.bits;
 	xfr.cs_change = 1;
@@ -130,10 +130,7 @@ extern bool spi_transfer_x20(struct spi_ctx *ctx, uint8_t *txbuf,
 	xfr.rx_nbits = 0;
 	xfr.pad = 0;
 
-//	write(fd_gpio, "1", 2);
-
 	ret = ioctl(ctx->fd, SPI_IOC_MESSAGE(1), &xfr);
-//	write(fd_gpio, "0", 2);
 	if (ret < 1) {
 		applog(LOG_ERR, "SPIx20: ioctl error on SPI device: %d", ret);
 	}
@@ -144,12 +141,9 @@ extern bool spi_transfer_x20(struct spi_ctx *ctx, uint8_t *txbuf,
 extern bool spi_transfer_x20_a(struct spi_ctx *ctx, 
 		struct spi_ioc_transfer *xfr, int num)
 {
-	int ret, ii;
-
-//	write(fd_gpio, "1", 2);
+	int ret;
 
 	ret = ioctl(ctx->fd, SPI_IOC_MESSAGE(num), xfr);
-//	write(fd_gpio, "0", 2);
 	if (ret < 1) {
 		applog(LOG_ERR, "SPIx20_a: ioctl error on SPI device: %d", ret);
 	}
