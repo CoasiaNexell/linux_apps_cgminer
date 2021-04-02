@@ -1046,6 +1046,7 @@ extern char *opt_btc08_options;
 extern char *opt_btc08_min_cores;
 extern char *opt_btc08_min_chips;
 extern char *opt_btc08_chiptest;
+extern bool opt_btc08_dump;
 #endif
 #ifdef USE_KLONDIKE
 extern char *opt_klondike_options;

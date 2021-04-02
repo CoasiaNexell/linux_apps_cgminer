@@ -232,7 +232,9 @@ static void applog_hexdump(char *prefix, uint8_t *buff, int len, int level)
 
 static void hexdump(char *prefix, uint8_t *buff, int len)
 {
-	applog_hexdump(prefix, buff, len, LOG_DEBUG);
+	if (opt_btc08_dump) {
+		applog_hexdump(prefix, buff, len, LOG_DEBUG);
+	}
 }
 
 static void hexdump_error(char *prefix, uint8_t *buff, int len)
