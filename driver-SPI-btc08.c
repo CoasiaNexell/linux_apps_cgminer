@@ -2390,20 +2390,24 @@ static int64_t btc08_scanwork(struct thr_info *thr)
 		if(0 == get_gpio_value(btc08->pinnum_gpio_oon))
 		{
 			applog(LOG_INFO, "================= OON IRQ!!!! =================");
-			nonce_ranges_processed++;
+			nonce_ranges_processed += 2;
 			applog(LOG_DEBUG, "%d: job done ", cid);
 
-			struct work *work = wq_dequeue(&btc08->active_wq);
-			if (work == NULL) {
-				applog(LOG_INFO, "%d: work underflow", cid);
-				break;
-			}
-			set_work(btc08, work);
-			if (btc08->disabled) {
-				applog(LOG_ERR, "chain%d is disabled", cid);
-				goto failure;
-			} else {
-				btc08->is_processing_job = true;
+			// Fill 2 works into FIFO whenever OON occurs
+			for (int i=0; i<2; i++)
+			{
+				struct work *work = wq_dequeue(&btc08->active_wq);
+				if (work == NULL) {
+					applog(LOG_INFO, "%d: work underflow", cid);
+					break;
+				}
+				set_work(btc08, work);
+				if (btc08->disabled) {
+					applog(LOG_ERR, "chain%d is disabled", cid);
+					goto failure;
+				} else {
+					btc08->is_processing_job = true;
+				}
 			}
 			break;
 		}
@@ -2422,7 +2426,7 @@ static int64_t btc08_scanwork(struct thr_info *thr)
 	}
 
 #if defined(USE_BTC08_FPGA)
-	return ((uint64_t)MAX_NONCE_SIZE + 1) * ASIC_BOOST_CORE_NUM;
+	return ((uint64_t)MAX_NONCE_SIZE + 1) * ASIC_BOOST_CORE_NUM * 2;
 #else
 	return ((int64_t)nonce_ranges_processed << 32) * ASIC_BOOST_CORE_NUM;		// nonce range : 4G
 #endif
