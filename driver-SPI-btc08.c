@@ -1557,9 +1557,6 @@ static bool get_nonce(struct btc08_chain *btc08, uint8_t *nonce,
 
 		// In case that GN IRQ is set
 		if (0 != gn_irq) {
-			uint32_t *nonce32 = (uint32_t *)nonce;
-			uint32_t *ret32 = (uint32_t *)ret;
-
 			applog(LOG_DEBUG, "%d: GN; %02x %02x %02x %02x", cid, ret[0], ret[1], ret[2], ret[3]);
 			applog(LOG_DEBUG, "%d: gn_job_id(%d): chip_id(%d)", cid, gn_job_id, chip_id);
 
@@ -1573,13 +1570,11 @@ static bool get_nonce(struct btc08_chain *btc08, uint8_t *nonce,
 			ret = cmd_READ_RESULT(btc08, *chip);
 			*micro_job_id = ret[17];		// [3:0]: lower3/lower2/lower/upper GN
 
-			ret32 = (uint32_t *)&(ret[0]);
 			for (int i=0; i<ASIC_BOOST_CORE_NUM; i++)
 			{
-				nonce32[i] = ret32[i];
-				applog(LOG_DEBUG, "%d: ret32 = 0x%08x, 0x%08x, 0x%08x, 0x%08x", cid, ret32[0], ret32[1], ret32[2], ret32[3]);
+				memcpy(&(nonce[i*4]), &(ret[i*4]), 4);
+				applog(LOG_DEBUG, "%d: ret = 0x%08x, 0x%08x, 0x%08x, 0x%08x", cid, *(ret + i*4), *(ret + i*4 + 1), *(ret + i*4 + 2), *(ret + i*4 + 3));
 			}
-			applog(LOG_DEBUG, "%d: nonce = 0x%08x, 0x%08x, 0x%08x, 0x%08x", cid, nonce32[0], nonce32[1], nonce32[2], nonce32[3]);
 
 			return true;
 		}
@@ -2229,6 +2224,10 @@ static int64_t btc08_scanwork(struct thr_info *thr)
 			applog(LOG_INFO, "================= GN IRQ!!!! =================");
 			if (get_nonce(btc08, (uint8_t*)&nonce[0], &chip_id, &job_id, &micro_job_id))
 			{
+				for (int i=0; i<ASIC_BOOST_CORE_NUM; i++) {
+					nonce[i] = bswap_32(nonce[i]);
+				}
+
 				if (chip_id < 1 || chip_id > btc08->num_active_chips) {
 					applog(LOG_WARNING, "%d: wrong chip_id %d",
 						cid, chip_id);
