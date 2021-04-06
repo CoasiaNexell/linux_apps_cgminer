@@ -304,6 +304,18 @@ const char *cmd2str(enum BTC08_command cmd)
 	}
 }
 
+static bool HWReset(int chain_id)
+{
+	if ((chain_id < 0) || (chain_id >= MAX_SPI_PORT))
+		return false;
+
+	set_gpio_value(reset_pin[chain_id], 0);
+	cgsleep_us(1000);
+	set_gpio_value(reset_pin[chain_id], 1);
+
+	return true;
+}
+
 /********** upper layer SPI functions */
 static uint8_t *exec_cmd(struct btc08_chain *btc08,
 			  uint8_t cmd, uint8_t chip_id,
@@ -1013,10 +1025,8 @@ static bool check_chip(struct btc08_chain *btc08, int chip_id)
 	applog(LOG_DEBUG, "%d: Found chip %d(chipid:%d) with %d active cores",
 	       cid, chip_index, chip_id, btc08->chips[chip_index].num_cores);
 
-	btc08->num_cores += btc08->chips[chip_index].num_cores;
 	btc08->chips[chip_index].perf = btc08->chips[chip_index].num_cores*btc08->chips[chip_index].mhz;
 	applog(LOG_DEBUG, "%d: chip %d perf = %ld (%ld MHz)\n", cid, chip_id, btc08->chips[chip_index].perf, btc08->chips[chip_index].mhz);
-	btc08->perf += btc08->chips[chip_index].perf;
 
 	return true;
 }
@@ -1151,35 +1161,40 @@ static int test_spi_seq(struct btc08_chain *btc08)
 // Read the number of chips
 static int chain_detect(struct btc08_chain *btc08)
 {
-	int ii;
 	uint8_t dummy[32]={0x00,};
 	int cid = btc08->chain_id;
 	uint8_t *ret;
-	uint8_t chipId;
-	uint8_t last_chipId = 1;
+	int active_chips = 0;
+
+	cmd_RESET_BCAST(btc08);
 
 	// AUTO_ADDRESS to read the number of chips
 	ret = exec_cmd(btc08, SPI_CMD_AUTO_ADDRESS, BCAST_CHIP_ID, dummy, sizeof(dummy), RET_AUTO_ADDRESS_LEN);
 	if(ret[0] != SPI_CMD_AUTO_ADDRESS) {
-		applog(LOG_WARNING, "%d: error in AUTO_ADDRESS", cid);
+		applog(LOG_WARNING, "%d: error in AUTO_ADDRESS(%d)", cid, ret[0]);
 		return 0;
 	}
 	btc08->num_chips = ret[1];
 
 	// READ_ID to check if each chip is active
-	for(chipId = btc08->num_chips; chipId >= 1; chipId--) {
+	for(int chipId = btc08->num_chips; chipId >= 1; chipId--) {
 		ret = exec_cmd(btc08, SPI_CMD_READ_ID, chipId, NULL, 0, RET_READ_ID_LEN);
 		if(ret[3] == chipId)
-			btc08->num_active_chips++;
+			active_chips++;
 		else {
 			applog(LOG_WARNING, "%d: error in READ_ID(%d;%d)", cid, chipId, ret[3]);
 			break;
 		}
 	}
+	btc08->num_active_chips = active_chips;
 
-	// RESET
-	cmd_RESET_BCAST(btc08);
-
+	/* Don't start mining if even one of the entire chips has a problem */
+	if (btc08->num_chips != btc08->num_active_chips)
+	{
+		btc08->num_chips = 0;
+		btc08->num_active_chips = 0;
+	}
+#if 0
 	// SET_LAST_CHIP
 	if (btc08->num_chips != btc08->num_active_chips)
 	{
@@ -1205,6 +1220,7 @@ static int chain_detect(struct btc08_chain *btc08)
 			}
 		}
 	}
+#endif
 
 	applog(LOG_WARNING, "%d: detected %d chips", cid, btc08->num_chips);
 
@@ -1311,7 +1327,7 @@ static bool reinit_chain(struct btc08_chain *btc08)
 	// chip_index 0, 1, 2, 3, 4, 5, 6,
 	// chip_id    1, 1, 1, 1, 2, 3, 4,
 	// loop                   2, 3, 4, ...
-	set_gpio_value(btc08->pinnum_gpio_vctrl, btc08->vctrl);
+	//set_gpio_value(btc08->pinnum_gpio_vctrl, btc08->vctrl);
 	if(btc08->last_chip) {
 		if(!set_pll_fout_en(btc08, 1, 0)) {
 			btc08->disabled = true;
@@ -1339,6 +1355,14 @@ static bool reinit_chain(struct btc08_chain *btc08)
 	btc08->is_processing_job = false;
 
 	cmd_BIST_BCAST(btc08, BCAST_CHIP_ID);
+	for (int chipId = 1; chipId <= btc08->num_chips; chipId++) {
+		if (check_chip(btc08, chipId))
+		{
+			btc08->num_cores += btc08->chips[chipId-1].num_cores;
+			btc08->perf += btc08->chips[chipId-1].perf;
+		}
+	}
+#if 0
 	for (ii = (btc08->num_chips-1); ii>=0; ii--) {
 		if (is_chip_disabled(btc08, ii)) {
 			applog(LOG_DEBUG, "%d: %d chip disabled", btc08->chain_id, ii);
@@ -1350,6 +1374,7 @@ static bool reinit_chain(struct btc08_chain *btc08)
 			chip_id -=  -(btc08->last_chip-1);
 		check_chip(btc08, chip_id);
 	}
+#endif
 	applog(LOG_DEBUG, "perf = %ld\n", btc08->perf);
 
 	calc_nonce_range(btc08);
@@ -1583,32 +1608,10 @@ static bool get_nonce(struct btc08_chain *btc08, uint8_t *nonce,
 	return false;
 }
 
-/* reset input work queues in chip chain */
-static bool abort_work(struct btc08_chain *btc08)
+/* H/W reset of chip chain */
+static bool abort_work(int chain_id)
 {
-	bool ret;
-	int i;
-	int chip_id;
-
-	ret = cmd_RESET_BCAST(btc08);
-	btc08->num_cores = 0;
-	btc08->perf = 0;
-	btc08->is_processing_job = false;
-
-	cmd_BIST_BCAST(btc08, BCAST_CHIP_ID);
-	for (i = (btc08->num_chips-1); i>=0; i--) {
-		struct btc08_chip *chip = &btc08->chips[i];
-		if (is_chip_disabled(btc08, i)) continue;
-		chip_id = i +1;
-		if(btc08->last_chip)
-			chip_id +=  (1-btc08->last_chip);
-		check_chip(btc08, chip_id);
-	}
-	applog(LOG_DEBUG, "perf = %ld\n", btc08->perf);
-
-	calc_nonce_range(btc08);
-
-	return ret;
+	return HWReset(chain_id);
 }
 
 /********** driver interface */
@@ -1699,7 +1702,7 @@ static int hashboard_test(struct btc08_chain *btc08)
 	for(mvolt_idx = 0; mvolt_idx < 2; mvolt_idx++) {
 		cmd_RESET_BCAST(btc08);
 
-		set_gpio_value(btc08->pinnum_gpio_vctrl, mvolt_idx);
+		//set_gpio_value(btc08->pinnum_gpio_vctrl, mvolt_idx);
 		sprintf(dummy, "at %d.%03dV", mvolt_array[mvolt_idx]/1000, mvolt_array[mvolt_idx]%1000);
 		cgsleep_ms(DEFAULT_HBVOLT_SETUPTIME_MSEC);
 
@@ -1745,6 +1748,8 @@ static int hashboard_test(struct btc08_chain *btc08)
 		cmd_RESET_BCAST(btc08);
 		btc08->num_cores = 0;
 		btc08->perf = 0;
+		btc08->is_processing_job = false;
+
 		cmd_BIST_BCAST(btc08, BCAST_CHIP_ID);
 
 		for (i = 0; i<btc08->num_chips; i++) {
@@ -1753,7 +1758,12 @@ static int hashboard_test(struct btc08_chain *btc08)
 			chip_id = i +1;
 			if(btc08->last_chip)
 				chip_id +=  (1-btc08->last_chip);
-			check_chip(btc08, chip_id);
+			if (check_chip(btc08, chip_id))
+			{
+				btc08->num_cores += btc08->chips[chip_id-1].num_cores;
+				btc08->perf += btc08->chips[chip_id-1].perf;
+			}
+
 			if(chip->num_cores < min_cores) {
 				res = -1;
 				applog(LOG_ERR, "%s:\tchip %d has not enough cores (%d, minimum is %d)", dummy, i, chip->num_cores, min_cores);
@@ -1890,11 +1900,92 @@ static void read_feature(struct btc08_chain *btc08, uint8_t chipId)
 	btc08->chips[chipId].rev = *ret32;
 }
 
+/* Reinit btc08 chip */
+static bool reinit_btc08_chip(struct btc08_chain *btc08)
+{
+	uint8_t *ret;
+	int chain_id;
+
+	if (btc08 == NULL)
+		return false;
+
+	chain_id = btc08->chain_id;
+
+	if (btc08->chips)
+		free(btc08->chips);
+
+	btc08->chips = NULL;
+	btc08->num_cores = 0;
+	btc08->perf = 0;
+	btc08->is_processing_job = false;
+
+	applog(LOG_ERR, "%d: [%s]", chain_id, __FUNCTION__);
+
+	// Check the number of the chips and the active chips via AUTO_ADDRESS & READ_ID
+	btc08->num_chips = chain_detect(btc08);
+	if (btc08->num_chips == 0)
+	{
+		applog(LOG_ERR, "%d: Failed to detect chain", chain_id);
+		goto failure;
+	}
+
+	applog(LOG_ERR, "spidev%d.%d: %d: Found %d BTC08 chips",
+	       btc08->spi_ctx->config.bus, btc08->spi_ctx->config.cs_line,
+	       btc08->chain_id, btc08->num_chips);
+
+	// Allocate memory for active chips
+	btc08->chips = calloc(btc08->num_active_chips, sizeof(struct btc08_chip));
+	assert (btc08->chips != NULL);
+
+	// Get feature & revision info
+	for(int chip_id = 1; chip_id <= btc08->num_active_chips; chip_id++) {
+		read_feature(btc08, chip_id);
+		ret = exec_cmd(btc08, SPI_CMD_READ_REVISION, chip_id, NULL, 0, RET_READ_REVISION_LEN);
+		applog(LOG_ERR, "%d: chipId %d feature(0x%08x) date(%02x/%02x/%02x), index(%02x)",
+					chain_id, chip_id, btc08->chips[chip_id].rev, ret[0], ret[1], ret[2], ret[3]);
+	}
+
+	// Check if there are enough chips on ASIC for mining
+	if (((btc08->chips[btc08->num_chips-1].rev >> 16) & 0xf) != FEATURE_FOR_FPGA) {
+		if (btc08->num_chips < btc08_config_options.min_chips) {
+			applog(LOG_ERR, "%d: failed to get enough chips(%d; it must be over than %d)",
+					chain_id, btc08->num_chips, btc08_config_options.min_chips);
+			goto failure;
+		}
+	}
+
+	// Set PLL config
+	if (!set_pll_config(btc08, BCAST_CHIP_ID, btc08_config_options.pll))
+		goto failure;
+
+	// RUN_BIST & READ_BIST to check the number of cores passed BIST
+	cmd_BIST_BCAST(btc08, BCAST_CHIP_ID);
+	for (int chip_id = 1; chip_id <= btc08->num_chips; chip_id++) {
+		if (check_chip(btc08, chip_id))
+		{
+			btc08->num_cores += btc08->chips[chip_id-1].num_cores;
+			btc08->perf += btc08->chips[chip_id-1].perf;
+		}
+	}
+
+	// Enable OON IRQ & Set UART divider
+	set_control(btc08, BCAST_CHIP_ID, (OON_IRQ_EN | btc08_config_options.udiv));
+
+	calc_nonce_range(btc08);
+
+	return true;
+
+failure:
+	if (btc08->chips)
+		free(btc08->chips);
+
+	return false;
+}
+
 struct btc08_chain *init_btc08_chain(struct spi_ctx *ctx, int chain_id)
 {
 	int i, chip_id;
 	uint8_t *ret;
-	uint32_t *ret32;
 	struct btc08_chain *btc08 = malloc(sizeof(*btc08));
 	assert(btc08 != NULL);
 
@@ -1911,11 +2002,7 @@ struct btc08_chain *init_btc08_chain(struct spi_ctx *ctx, int chain_id)
 
 	btc08->pinnum_gpio_gn    =    gn_pin[i];
 	btc08->pinnum_gpio_oon   =   oon_pin[i];
-	btc08->pinnum_gpio_vctrl = vctrl_pin[i];
 	btc08->pinnum_gpio_reset = reset_pin[i];
-
-	// TODO get volt from config file
-	btc08->vctrl = btc08->vctrl == 0? 0 : 1;
 
 	// Check the number of the chips and the active chips via AUTO_ADDRESS & READ_ID
 	btc08->num_chips = chain_detect(btc08);
@@ -1951,8 +2038,6 @@ struct btc08_chain *init_btc08_chain(struct spi_ctx *ctx, int chain_id)
 		}
 	}
 
-	set_gpio_value(btc08->pinnum_gpio_vctrl, btc08->vctrl);	// set to 0.4V
-
 	// Set PLL config
 	if (!set_pll_config(btc08, BCAST_CHIP_ID, btc08_config_options.pll))
 		goto failure;
@@ -1960,7 +2045,11 @@ struct btc08_chain *init_btc08_chain(struct spi_ctx *ctx, int chain_id)
 	// RUN_BIST & READ_BIST to check the number of cores passed BIST
 	cmd_BIST_BCAST(btc08, BCAST_CHIP_ID);
 	for (chip_id = 1; chip_id <= btc08->num_chips; chip_id++) {
-		check_chip(btc08, chip_id);
+		if (check_chip(btc08, chip_id))
+		{
+			btc08->num_cores += btc08->chips[chip_id-1].num_cores;
+			btc08->perf += btc08->chips[chip_id-1].perf;
+		}
 	}
 
 	// Enable OON IRQ & Set UART divider (TODO: Need to check if uart divider value is correct!)
@@ -2040,7 +2129,7 @@ static void export_gpios()
 	int fd;
 	char port[8];
 	char path[64];
-	for( int i ; i<MAX_SPI_PORT ; i++ )
+	for( int i=0 ; i<MAX_SPI_PORT ; i++ )
 	{
 		//	RESET
 		fd = open("/sys/class/gpio/export", O_WRONLY);
@@ -2178,22 +2267,20 @@ static int64_t btc08_scanwork(struct thr_info *thr)
 
 	if ((0 == btc08->num_cores) || (MAX_CORES < btc08->num_cores)) {
 		cgpu->deven = DEV_DISABLED;
-		applog(LOG_ERR, "wrong num_cores", btc08->chain_id);
-		reinit_chain(btc08);
-		return 0;
+		applog(LOG_ERR, "%d: wrong num_cores: %d", btc08->chain_id, btc08->num_cores);
+		return -1;
 	}
 
 	if (btc08->disabled) {
 		cgpu->deven = DEV_DISABLED;
 		applog(LOG_ERR, "chain%d is disabled", cid);
-		reinit_chain(btc08);
-		return 0;
+		return -1;
 	}
+
+	mutex_lock(&btc08->lock);
 
 	applog(LOG_INFO, "BTC08 running scanwork",
 			(false == btc08->is_processing_job) ? "with the new works":"");
-
-	mutex_lock(&btc08->lock);
 
 	if (!btc08->is_processing_job)
 	{
@@ -2236,7 +2323,7 @@ static int64_t btc08_scanwork(struct thr_info *thr)
 				if (job_id < 1 && job_id > MAX_JOB_ID_NUM) {
 					applog(LOG_WARNING, "%d: chip %d: result has wrong "
 						"job_id %d", cid, chip_id, job_id);
-					flush_spi(btc08);
+					flush_spi(btc08);   // TODO: Need to check
 					continue;
 				}
 
@@ -2348,15 +2435,22 @@ static bool btc08_queue_full(struct cgpu_info *cgpu)
 static void btc08_flush_work(struct cgpu_info *cgpu)
 {
 	struct btc08_chain *btc08 = cgpu->device_data;
-	int cid = btc08->chain_id;
+	int cid = -1;
+
+	if (btc08 == NULL)
+		return;
+
+	mutex_lock(&btc08->lock);
+
+	cid = btc08->chain_id;
 
 	applog(LOG_DEBUG, "%d: BTC08 running flushwork", cid);
 
-	mutex_lock(&btc08->lock);
 	/* stop chips hashing current work */
-	if (!abort_work(btc08)) {
+	if (!abort_work(cid)) {
 		applog(LOG_ERR, "%d: failed to abort work in chip chain!", cid);
 	}
+
 	/* flush the work chips were currently hashing */
 	for (int i = btc08->last_chip; i < btc08->num_chips; i++) {
 		for (int j = 0; j < MAX_JOB_ID_NUM; j++) {
@@ -2370,6 +2464,7 @@ static void btc08_flush_work(struct cgpu_info *cgpu)
 		}
 		btc08->last_queued_id = 0;
 	}
+
 	/* flush queued work */
 	applog(LOG_DEBUG, "%d: flushing queued work...", cid);
 	while (btc08->active_wq.num_elems > 0) {
@@ -2378,6 +2473,15 @@ static void btc08_flush_work(struct cgpu_info *cgpu)
 		work_completed(cgpu, work);
 	}
 	btc08->sdiff = 0;
+	btc08->is_processing_job = false;
+	btc08->num_cores = 0;
+	btc08->perf = 0;
+
+	/* reinit btc08 chip */
+	if (!reinit_btc08_chip(btc08)) {
+		cgpu->deven = DEV_DISABLED;
+	}
+
 	mutex_unlock(&btc08->lock);
 }
 
