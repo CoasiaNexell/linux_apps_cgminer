@@ -193,9 +193,7 @@ struct btc08_chain {
 	int last_temp_time;
 	int pinnum_gpio_gn;
 	int pinnum_gpio_oon;
-	int pinnum_gpio_vctrl;
 	int pinnum_gpio_reset;
-	int vctrl;
 	int fd_gpio_gn;
 	int fd_gpio_oon;
 	int volt_ch;
