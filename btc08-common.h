@@ -96,7 +96,10 @@ struct work_queue {
 #define TEMP_UPDATE_INT_MS	2000
 
 #define MAX_JOB_ID_NUM			256
-#define JOB_ID_NUM_MASK			(MAX_JOB_ID_NUM-1)	/* total 4 */
+#define JOB_ID_NUM_MASK         (MAX_JOB_FIFO*10)	/* total 40 */
+
+// RUN_JOB Extra Bits
+#define ASIC_BOOST_EN           (1<<1)
 
 // SET_CONTROL Extra Bits
 #define OON_IRQ_EN				(1<<4)
@@ -179,7 +182,7 @@ struct btc08_chain {
 	pthread_mutex_t lock;
 
 	struct work_queue active_wq;
-	struct work *work[MAX_JOB_ID_NUM];
+	struct work *work[JOB_ID_NUM_MASK+1];
 	// a flag to prevent sending READ_ID cmd to all chips.
 	bool is_processing_job;
 	uint8_t last_queued_id;
