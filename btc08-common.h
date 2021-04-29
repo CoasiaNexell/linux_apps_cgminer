@@ -96,7 +96,7 @@ struct work_queue {
 #define TEMP_UPDATE_INT_MS	2000
 
 #define MAX_JOB_ID_NUM			256
-#define JOB_ID_NUM_MASK         (MAX_JOB_FIFO*2-1)	/* total 7 */
+#define JOB_ID_NUM_MASK         (MAX_JOB_FIFO*10)	/* total 40 */
 
 // RUN_JOB Extra Bits
 #define ASIC_BOOST_EN           (1<<1)
