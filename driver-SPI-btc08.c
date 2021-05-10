@@ -29,34 +29,40 @@
 #define GPIOD	96
 #define GPIOE	128
 
-#define GPIO_HASH1_VOLCTRL		(GPIOA + 9)			// High: Hash1, Low: VTK
-#define GPIO_HASH1_PLUG			(GPIOA + 11)		// High: Hash1 connected, Low: Hash removed
-#define GPIO_HASH0_VOLCTRL		(GPIOA + 20)		// High: Hash0, Low: VTK
-#define GPIO_HASH0_PLUG			(GPIOA + 24)		// High: Hash0 connected, Low: Hash removed
+#define GPIO_HASH0_PLUG         (GPIOA + 24)		// High: Hash0 connected, Low: Hash0 removed
+#define GPIO_HASH1_PLUG         (GPIOA + 11)		// High: Hash1 connected, Low: Hash1 removed
 
-#define GPIO_HASH0_OON			(GPIOD + 29)		// ACTIVE_LOW
-#define GPIO_HASH0_GLD			(GPIOD + 30)		// ACTIVE_LOW
-#define GPIO_HASH0_RST			(GPIOD + 31)		// ACTIVE_LOW
+#define GPIO_HASH0_BODDET       (GPIOA + 20)		// High: Hash0, Low: VTK
+#define GPIO_HASH1_BODDET       (GPIOA +  9)		// High: Hash1, Low: VTK
 
-#define GPIO_HASH1_OON			(GPIOE + 2)			// ACTIVE_LOW
-#define GPIO_HASH1_GLD			(GPIOE + 3)			// ACTIVE_LOW
-#define GPIO_HASH1_RST			(GPIOE + 4)			// ACTIVE_LOW
+#define GPIO_HASH0_PWREN        (GPIOA +  0)		// High: FAN ON, Low : FAN OFF
+#define GPIO_HASH1_PWREN        (GPIOA + 16)		// High: FAN ON, Low : FAN OFF
+
+#define GPIO_HASH0_OON          (GPIOD + 29)		// ACTIVE_LOW
+#define GPIO_HASH0_GLD          (GPIOD + 30)		// ACTIVE_LOW
+#define GPIO_HASH0_RST          (GPIOD + 31)		// ACTIVE_LOW
+
+#define GPIO_HASH1_OON          (GPIOE +  2)		// ACTIVE_LOW
+#define GPIO_HASH1_GLD          (GPIOE +  3)		// ACTIVE_LOW
+#define GPIO_HASH1_RST          (GPIOE +  4)		// ACTIVE_LOW
 
 static struct spi_ctx *spi[MAX_SPI_PORT];
 #if defined(USE_BTC08_FPGA)
 static int spi_available_bus[MAX_SPI_PORT] = {0};
-static int vctrl_pin[MAX_SPI_PORT]         = {GPIO_HASH0_VOLCTRL};
+static int pwren_pin[MAX_SPI_PORT]         = {GPIO_HASH0_PWREN};
+static int boddet_pin[MAX_SPI_PORT]        = {GPIO_HASH0_BODDET};
 static int plug_pin[MAX_SPI_PORT]          = {GPIO_HASH0_PLUG};
 static int reset_pin[MAX_SPI_PORT]         = {GPIO_HASH0_RST};
 static int gn_pin[MAX_SPI_PORT]            = {GPIO_HASH0_GLD};
 static int oon_pin[MAX_SPI_PORT]           = {GPIO_HASH0_OON};
 #else
 static int spi_available_bus[MAX_SPI_PORT] = {0, 2};
-static int vctrl_pin[MAX_SPI_PORT]         = {GPIO_HASH0_VOLCTRL, GPIO_HASH1_VOLCTRL};
-static int plug_pin[MAX_SPI_PORT]          = {GPIO_HASH0_PLUG, GPIO_HASH1_PLUG};
-static int reset_pin[MAX_SPI_PORT]         = {GPIO_HASH0_RST, GPIO_HASH1_RST};
-static int gn_pin[MAX_SPI_PORT]            = {GPIO_HASH0_GLD, GPIO_HASH1_GLD};
-static int oon_pin[MAX_SPI_PORT]           = {GPIO_HASH0_OON, GPIO_HASH1_OON};
+static int pwren_pin[MAX_SPI_PORT]         = {GPIO_HASH0_PWREN,  GPIO_HASH1_PWREN};
+static int boddet_pin[MAX_SPI_PORT]        = {GPIO_HASH0_BODDET, GPIO_HASH1_BODDET};
+static int plug_pin[MAX_SPI_PORT]          = {GPIO_HASH0_PLUG,   GPIO_HASH1_PLUG};
+static int reset_pin[MAX_SPI_PORT]         = {GPIO_HASH0_RST,    GPIO_HASH1_RST};
+static int gn_pin[MAX_SPI_PORT]            = {GPIO_HASH0_GLD,    GPIO_HASH1_GLD};
+static int oon_pin[MAX_SPI_PORT]           = {GPIO_HASH0_OON,    GPIO_HASH1_OON};
 #endif
 static int spi_idx = 0;
 
@@ -2244,20 +2250,88 @@ static void export_gpios()
 				close(fd);
 			}
 		}
+		//	HASH_PLUG
+		fd = open("/sys/class/gpio/export", O_WRONLY);
+		if( fd > 0 )
+		{
+			sprintf(port, "%d", plug_pin[i]);
+			write(fd, port, strlen(port));
+			close(fd);
+			sprintf(path, "/sys/class/gpio/gpio%d/direction", plug_pin[i]);
+			fd = open(path, O_WRONLY);
+			if( fd>0 )
+			{
+				write(fd, "in", 2);
+				close(fd);
+			}
+		}
+		//	BOD_DET
+		fd = open("/sys/class/gpio/export", O_WRONLY);
+		if( fd > 0 )
+		{
+			sprintf(port, "%d", boddet_pin[i]);
+			write(fd, port, strlen(port));
+			close(fd);
+			sprintf(path, "/sys/class/gpio/gpio%d/direction", boddet_pin[i]);
+			fd = open(path, O_WRONLY);
+			if( fd>0 )
+			{
+				write(fd, "in", 2);
+				close(fd);
+			}
+		}
+		//	PWREN_LDO
+		fd = open("/sys/class/gpio/export", O_WRONLY);
+		if( fd > 0 )
+		{
+			sprintf(port, "%d", pwren_pin[i]);
+			write(fd, port, strlen(port));
+			close(fd);
+			sprintf(path, "/sys/class/gpio/gpio%d/direction", pwren_pin[i]);
+			fd = open(path, O_WRONLY);
+			if( fd>0 )
+			{
+				write(fd, "out", 3);
+				close(fd);
+			}
+		}
 	}
+}
+
+void setup_hashboard_gpio(int port_num, int *plug_status, int *board_type)
+{
+	// Check hash board connection
+	*plug_status = get_gpio_value(plug_pin[port_num]);
+
+	// Read board type (HASH/VTK)
+	*board_type = get_gpio_value(boddet_pin[port_num]);
+
+	// Enable FN
+	set_gpio_value(pwren_pin[port_num], 1);
+
+	applog(LOG_DEBUG, "Hash%d: connection status(%s), board_type(%s)",
+			port_num,
+			(*plug_status == 1) ? "Connected":"Removed",
+			(*board_type == 1) ? "Hash":"VTK");
 }
 
 /* Probe SPI channel and register chip chain */
 void btc08_detect(bool hotplug)
 {
 	int ii;
-	int fd_gpio;
+	int plug_status[MAX_SPI_PORT];
+	int board_type[MAX_SPI_PORT];
 
 	/* no hotplug support for SPI */
 	if (hotplug)
 		return;
 
 	export_gpios();
+
+	for (int i=0; i<MAX_SPI_PORT; i++)
+	{
+		setup_hashboard_gpio(i, &(plug_status[i]), &(board_type[i]));
+	}
 
 	// reset
 	for (int i=0; i<MAX_SPI_PORT; i++)
