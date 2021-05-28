@@ -112,7 +112,7 @@ extern bool spi_transfer_x20(struct spi_ctx *ctx, uint8_t *txbuf,
 
 	if(len&0x3) {
 		applog(LOG_ERR, "SPI: length must be 4bytes align, %d is not allowed\n", len);
-		return -1;
+		return false;
 	}
 	if (rxbuf != NULL)
 		memset(rxbuf, 0xff, len);

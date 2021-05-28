@@ -106,6 +106,13 @@ struct work_queue {
 #define LAST_CHIP		    	(1<<15)
 #define MIN_UART_DIVIDER    	(0x03)
 
+// PLL
+#define FOUT_EN_DISABLE         0
+#define FOUT_EN_ENABLE          1
+
+#define RESETB_RESET            0
+#define RESETB_ON               1
+
 enum BTC08_command {
 	SPI_CMD_READ_ID          = 0x00,
 	SPI_CMD_AUTO_ADDRESS     = 0x01,
@@ -223,6 +230,8 @@ struct btc08_config_options {
 	int min_cores;
 	int min_chips;
 	int test_mode;
+	int num_chips;
+	int num_cores;
 };
 
 /* global configuration instance */

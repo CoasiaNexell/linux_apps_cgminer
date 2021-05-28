@@ -75,6 +75,55 @@ static int spi_idx = 0;
 /* if after this number of retries a chip is still inaccessible, disable it */
 #define DISABLE_CHIP_FAIL_THRESHOLD	3
 
+struct pll_conf {
+	int freq;
+	union {
+		struct {
+			int p        : 6;
+			int m        :10;
+			int s        : 3;
+			int bypass   : 1;
+			int div_sel  : 1;
+			int afc_enb  : 1;
+			int extafc   : 5;
+			int feed_en  : 1;
+			int fsel     : 1;
+			int rsvd     : 3;
+		};
+		unsigned int val;
+	};
+};
+
+#define BYPASS      (1)
+#define DIV_SEL     (0)
+
+static struct pll_conf pll_sets[] = {
+//	{ freq,{p,    m, s, bypass, div_sel, afc_enb, extafc, feed_en, fsel, rsvd}}
+	{ 24,  {0,    0, 0, BYPASS, DIV_SEL, 0, 0, 0, 0, 0}},
+	{ 50,  {3,  200, 5,      0, DIV_SEL, 0, 0, 0, 0, 0}},
+	{ 100, {3,  400, 5,      0, DIV_SEL, 0, 0, 0, 0, 0}},
+	{ 150, {2,  200, 4,      0, DIV_SEL, 0, 0, 0, 0, 0}},
+	{ 200, {3,  200, 3,      0, DIV_SEL, 0, 0, 0, 0, 0}},
+	{ 250, {3,  250, 3,      0, DIV_SEL, 0, 0, 0, 0, 0}},
+	{ 300, {2,  200, 3,      0, DIV_SEL, 0, 0, 0, 0, 0}},
+	{ 350, {3,  350, 3,      0, DIV_SEL, 0, 0, 0, 0, 0}},
+	{ 400, {3,  200, 2,      0, DIV_SEL, 0, 0, 0, 0, 0}},
+	{ 450, {2,  150, 2,      0, DIV_SEL, 0, 0, 0, 0, 0}},
+	{ 500, {3,  250, 2,      0, DIV_SEL, 0, 0, 0, 0, 0}},
+	{ 550, {3,  275, 2,      0, DIV_SEL, 0, 0, 0, 0, 0}},
+	{ 600, {2,  200, 2,      0, DIV_SEL, 0, 0, 0, 0, 0}},
+	{ 650, {3,  325, 2,      0, DIV_SEL, 0, 0, 0, 0, 0}},
+	{ 700, {3,  350, 2,      0, DIV_SEL, 0, 0, 0, 0, 0}},
+	{ 750, {3,  375, 2,      0, DIV_SEL, 0, 0, 0, 0, 0}},
+	{ 800, {3,  200, 1,      0, DIV_SEL, 0, 0, 0, 0, 0}},
+	{ 850, {6,  425, 1,      0, DIV_SEL, 0, 0, 0, 0, 0}},
+	{ 900, {2,  150, 1,      0, DIV_SEL, 0, 0, 0, 0, 0}},
+	{ 950, {6,  475, 1,      0, DIV_SEL, 0, 0, 0, 0, 0}},
+	{1000, {6, 1000, 2,      0, DIV_SEL, 0, 0, 0, 0, 0}},
+};
+
+#define NUM_PLL_SET (sizeof(pll_sets)/sizeof(struct pll_conf))
+
 /*
  * for now, we have one global config, defaulting values:
  * - ref_clk 16MHz / sys_clk 800MHz
@@ -86,6 +135,8 @@ struct btc08_config_options btc08_config_options = {
 	.spi_clk_khz = 2000,             // 2 MHz (minimum spi clock: 1.2 MHz)
 	.min_cores = DEFAULT_MIN_CORES,
 	.min_chips = DEFAULT_MIN_CHIPS,
+	.num_chips = MAX_CHIP_NUM,
+	.num_cores = MAX_CORES_PER_CHIP,
 };
 
 /* override values with --bitmine-btc08-options ref:sys:spi: - use 0 for default */
@@ -414,6 +465,30 @@ static uint8_t golden_disable[DISABLE_LEN] = {
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
 
+static void disable_cores(struct btc08_chain *btc08, uint8_t chip_id)
+{
+	uint8_t disable_cores[32] = {0x00,};
+	uint8_t disable_core_num = (MAX_CORES_PER_CHIP - btc08_config_options.num_cores);
+
+	applog(LOG_INFO, "btc08_config_options.num_cores:%d disable_core_num:%d",
+			btc08_config_options.num_cores, disable_core_num);
+
+	if( disable_core_num > 0 )
+	{
+		memset(disable_cores, 0xff, 32);
+		disable_cores[31] &= ~(1);
+		for (int i=1; i<btc08_config_options.num_cores; i++) {
+			disable_cores[31-(i/8)] &= ~(1 << (i % 8));
+		}
+	}
+	else
+	{
+		memset(disable_cores, 0x00, 32);
+	}
+
+	exec_cmd(btc08, SPI_CMD_SET_DISABLE, chip_id, disable_cores, DISABLE_LEN, 0);
+}
+
 /********** btc08 SPI commands */
 static uint8_t *cmd_BIST_BCAST(struct btc08_chain *btc08, uint8_t chip_id)
 {
@@ -425,7 +500,7 @@ static uint8_t *cmd_BIST_BCAST(struct btc08_chain *btc08, uint8_t chip_id)
 
 	exec_cmd(btc08, SPI_CMD_WRITE_NONCE, chip_id, golden_nonce, (NONCE_LEN*2), 0);
 
-	exec_cmd(btc08, SPI_CMD_SET_DISABLE, chip_id, golden_disable, DISABLE_LEN, 0);
+	disable_cores(btc08, chip_id);
 
 	ret = exec_cmd(btc08, SPI_CMD_RUN_BIST, chip_id, golden_hash, BIST_HASH_LEN, 0);
 
@@ -562,6 +637,89 @@ static uint8_t *cmd_READ_ID(struct btc08_chain *btc08, uint8_t chip_id)
 	uint8_t *ret = exec_cmd(btc08, SPI_CMD_READ_ID, chip_id, NULL, 0, RET_READ_ID_LEN);
 	if (ret == NULL || ret[3] != chip_id) {
 		applog(LOG_ERR, "%d: cmd_READ_ID chip %d failed",
+		       btc08->chain_id, chip_id);
+		return NULL;
+	}
+
+	return ret;
+}
+
+static bool cmd_SET_PLL_RESETB(struct btc08_chain *btc08, uint8_t chip_id, uint8_t reset)
+{
+	bool ret;
+	int tx_len = ALIGN(CMD_CHIP_ID_LEN + PLL_VALUE_LEN + DUMMY_BYTES, 4);
+
+	memset(btc08->spi_tx, 0, tx_len);
+	btc08->spi_tx[0] = SPI_CMD_SET_PLL_RESETB;
+	btc08->spi_tx[1] = chip_id;
+	btc08->spi_tx[2] = 0;
+	btc08->spi_tx[3] = (reset&1);       // 0: reset, 1: on
+
+	ret = spi_transfer_x20(btc08->spi_ctx, btc08->spi_tx, btc08->spi_rx, tx_len);
+	for(int ii=0; ii<tx_len; ii++) btc08->spi_rx[ii] ^= 0xff;
+	if(ret == false) {
+		btc08->disabled = true;
+		applog(LOG_ERR, "%d: %s() error", btc08->chain_id, __func__);
+	}
+	else
+		btc08->disabled = false;
+
+	return ret;
+}
+
+static bool cmd_SET_PLL_FOUT_EN(struct btc08_chain *btc08, uint8_t chip_id, uint8_t fout)
+{
+	bool ret;
+	int tx_len = ALIGN(CMD_CHIP_ID_LEN + PLL_VALUE_LEN + DUMMY_BYTES, 4);
+
+	memset(btc08->spi_tx, 0, tx_len);
+	btc08->spi_tx[0] = SPI_CMD_SET_PLL_FOUT_EN;
+	btc08->spi_tx[1] = chip_id;
+	btc08->spi_tx[2] = 0;
+	btc08->spi_tx[3] = (fout&1);		// 0: disable, 1: enable
+
+	ret = spi_transfer_x20(btc08->spi_ctx, btc08->spi_tx, btc08->spi_rx, tx_len);
+	for(int ii=0; ii<tx_len; ii++) btc08->spi_rx[ii] ^= 0xff;
+	if(ret == false) {
+		btc08->disabled = true;
+		applog(LOG_ERR, "%d: %s() error", btc08->chain_id, __func__);
+	}
+	else
+		btc08->disabled = false;
+
+	return ret;
+}
+
+static bool cmd_SET_PLL_CONFIG(struct btc08_chain *btc08, uint8_t chip_id, uint8_t idx)
+{
+	bool ret;
+	int tx_len = ALIGN(CMD_CHIP_ID_LEN + PLL_VALUE_LEN + DUMMY_BYTES, 4);
+
+	memset(btc08->spi_tx, 0, tx_len);
+	btc08->spi_tx[0] = SPI_CMD_SET_PLL_CONFIG;
+	btc08->spi_tx[1] = chip_id;
+	btc08->spi_tx[2] = (uint8_t)(pll_sets[idx].val>>24)&0xff;
+	btc08->spi_tx[3] = (uint8_t)(pll_sets[idx].val>>16)&0xff;
+	btc08->spi_tx[4] = (uint8_t)(pll_sets[idx].val>> 8)&0xff;
+	btc08->spi_tx[5] = (uint8_t)(pll_sets[idx].val>> 0)&0xff;
+
+	ret = spi_transfer_x20(btc08->spi_ctx, btc08->spi_tx, btc08->spi_rx, tx_len);
+	for(int ii=0; ii<tx_len; ii++) btc08->spi_rx[ii] ^= 0xff;
+	if(ret == false) {
+		btc08->disabled = true;
+		applog(LOG_ERR, "%d: %s() error", btc08->chain_id, __func__);
+	}
+	else
+		btc08->disabled = false;
+
+	return ret;
+}
+
+static uint8_t *cmd_READ_PLL(struct btc08_chain *btc08, uint8_t chip_id)
+{
+	uint8_t *ret = exec_cmd(btc08, SPI_CMD_READ_PLL, chip_id, NULL, 0, RET_READ_PLL_LEN);
+	if (ret == NULL) {
+		applog(LOG_ERR, "%d: SPI_CMD_READ_PLL chip %d failed",
 		       btc08->chain_id, chip_id);
 		return NULL;
 	}
@@ -809,18 +967,18 @@ static bool check_chip_pll_lock(struct btc08_chain *btc08, int chip_id)
 	for (n = 0; n < MAX_PLL_WAIT_CYCLES; n++) {
 		/* check for PLL lock status */
 		ret = exec_cmd(btc08, SPI_CMD_READ_PLL, chip_id, NULL, 0, RET_READ_PLL_LEN);
-		if(ret[1] != SPI_CMD_READ_PLL) {
+		if (ret == NULL) {
 			applog(LOG_WARNING, "%d: error in READ_PLL", cid);
 			return false;
 		}
-		if(ret[2]&(1<<7)) {
-			applog(LOG_WARNING, "%d: PLL locked %d(0x%x)CHIP", cid, chip_id, chip_id);
+		if(ret[1]&(1<<7)) {
+			applog(LOG_ERR, "%d: succeed to lock PLL on chip %d", cid, chip_id);
 			return true;
 		}
 
 		cgsleep_ms(PLL_CYCLE_WAIT_TIME);
 	}
-	applog(LOG_ERR, "%d: chip %d failed PLL lock", cid, chip_id);
+	applog(LOG_ERR, "%d: failed to lock PLL on chip %d", cid, chip_id);
 	return false;
 #else
 	int cid = btc08->chain_id;
@@ -829,76 +987,51 @@ static bool check_chip_pll_lock(struct btc08_chain *btc08, int chip_id)
 #endif
 }
 
-struct pll_conf {
-	int freq;
-	union {
-		struct {
-			int p        : 6;
-			int m        :10;
-			int s        : 3;
-			int bypass   : 1;
-			int div_sel  : 1;
-			int afc_enb  : 1;
-			int extafc   : 5;
-			int feed_en  : 1;
-			int fsel     : 1;
-			int rsvd     : 3;
-		};
-		unsigned int val;
-	};
-};
-
-static struct pll_conf pll_sets[] = {
-	{ 300, {6, 600, 2, 0, 1, 0, 0, 0, 0, 0}},
-	{ 350, {6, 700, 2, 0, 1, 0, 0, 0, 0, 0}},
-	{ 400, {6, 400, 1, 0, 1, 0, 0, 0, 0, 0}},
-	{ 450, {6, 450, 1, 0, 1, 0, 0, 0, 0, 0}},
-	{ 500, {6, 500, 1, 0, 1, 0, 0, 0, 0, 0}},
-	{ 550, {6, 550, 1, 0, 1, 0, 0, 0, 0, 0}},
-	{ 600, {6, 600, 1, 0, 1, 0, 0, 0, 0, 0}},
-	{ 650, {6, 650, 1, 0, 1, 0, 0, 0, 0, 0}},
-	{ 700, {6, 700, 1, 0, 1, 0, 0, 0, 0, 0}},
-	{ 750, {6, 750, 1, 0, 1, 0, 0, 0, 0, 0}},
-	{ 800, {6, 800, 1, 0, 1, 0, 0, 0, 0, 0}},
-	{ 850, {6, 425, 0, 0, 1, 0, 0, 0, 0, 0}},
-	{ 900, {6, 450, 0, 0, 1, 0, 0, 0, 0, 0}},
-	{ 950, {6, 475, 0, 0, 1, 0, 0, 0, 0, 0}},
-	{1000, {6, 500, 0, 0, 1, 0, 0, 0, 0, 0}},
-};
-
-#define NUM_PLL_SET (sizeof(pll_sets)/sizeof(struct pll_conf))
-
-static int get_pll_idx(int pll)
+static int get_pll_idx(int pll_freq)
 {
 	int ret;
-
 	struct pll_conf *plls;
 
-	if(pll < pll_sets[0].freq)
+	if(pll_freq < pll_sets[0].freq)
 		return -1;
-	if(pll > pll_sets[NUM_PLL_SET-1].freq) {
+	if(pll_freq > pll_sets[NUM_PLL_SET-1].freq) {
 		applog(LOG_WARNING, "set to Max Frequency setting (%d)", pll_sets[NUM_PLL_SET-1].freq);
 		return (NUM_PLL_SET-1);
 	}
 
 	ret = 0;
 	for(plls = &pll_sets[0]; plls; plls++) {
-		if(pll <= plls->freq) break;
+		if(pll_freq <= plls->freq) break;
 		ret++;
 	}
 	return ret;
 }
 
-static bool set_pll_fout_en(struct btc08_chain *btc08, int chip_id, int en)
+static void set_pll_config_by_idx(struct btc08_chain *btc08, int chipId, int pll_idx)
 {
-	uint8_t sbuf[2];
-	// PLL_FOUT_EN:1
-	sbuf[0] = 0;
-	sbuf[1] = 1;
-	exec_cmd(btc08, SPI_CMD_SET_PLL_FOUT_EN, chip_id, sbuf, sizeof(sbuf), 0);
-	return true;
+	// seq1. Disable FOUT
+	cmd_SET_PLL_FOUT_EN(btc08, chipId, FOUT_EN_DISABLE);
+
+	// seq3. Set PLL(change PMS value)
+	cmd_SET_PLL_CONFIG(btc08, chipId, pll_idx);
+
+	// seq2. Down reset
+	cmd_SET_PLL_RESETB(btc08, chipId, RESETB_RESET);
+
+	// seq4. Up reset
+	cmd_SET_PLL_RESETB(btc08, chipId, RESETB_ON);
+
+	// seq4. wait for 1 ms
+	cgsleep_ms(1);
+
+	// seq5. Enable FOUT
+	cmd_SET_PLL_FOUT_EN(btc08, chipId, FOUT_EN_ENABLE);
 }
 
+/*
+ * FPGA: 50MHz
+ * ASIC: 50~1000MHz
+*/
 static bool set_pll_config(struct btc08_chain *btc08, int chip_id, int pll)
 {
 	int ii;
@@ -909,7 +1042,8 @@ static bool set_pll_config(struct btc08_chain *btc08, int chip_id, int pll)
 	if(btc08->last_chip)
 		chip_index += (btc08->last_chip-1);
 
-	if(((btc08->chips[btc08->num_chips-1].rev>>16)&0xf) == FEATURE_FOR_FPGA) {
+	if(((btc08->chips[btc08->num_chips-1].rev >> 8) & 0xf) == FEATURE_FOR_FPGA)
+	{
 		btc08->timeout_oon = TIME_LIMIT_OF_OON_FPGA;
 		if(chip_id) {
 			btc08->chips[chip_index].mhz = FPGA_MINER_CORE_CLK;
@@ -925,25 +1059,12 @@ static bool set_pll_config(struct btc08_chain *btc08, int chip_id, int pll)
 		int pll_idx;
 		btc08->timeout_oon = TIME_LIMIT_OF_OON;
 		pll_idx = get_pll_idx(pll);
-
 		if(pll_idx < 0) {
 			applog(LOG_ERR, "%d: too low frequency (%d), it must be over than %d", pll, pll_sets[0].freq);
 			return false;
 		}
 
-		// PLL_RESETB:0
-		sbuf[0] = 0;
-		sbuf[1] = 0;
-		exec_cmd(btc08, SPI_CMD_SET_PLL_RESETB, chip_id, sbuf, PLL_VALUE_LEN, 0);
-		// PLL_FOUT_EN:0
-		set_pll_fout_en(btc08, chip_id, 0);
-
-		sbuf[0] = (uint8_t)(pll_sets[pll_idx].val>>24)&0xff;
-		sbuf[1] = (uint8_t)(pll_sets[pll_idx].val>>16)&0xff;
-		sbuf[2] = (uint8_t)(pll_sets[pll_idx].val>> 8)&0xff;
-		sbuf[3] = (uint8_t)(pll_sets[pll_idx].val>> 0)&0xff;
-		exec_cmd(btc08, SPI_CMD_SET_PLL_CONFIG, chip_id, sbuf, sizeof(sbuf), 0);
-
+		set_pll_config_by_idx(btc08, chip_id, pll_idx);
 		if(chip_id) {
 			if (!check_chip_pll_lock(btc08, chip_id)) {
 				applog(LOG_ERR, "%d: chip %d (chip_id:%d) failed PLL lock",
@@ -1021,9 +1142,9 @@ static bool check_chip(struct btc08_chain *btc08, int chip_id)
 	btc08->chips[chip_index].num_cores = ret[1];
 
 	// Calculate the performance of each chip
-	if (((btc08->chips[chip_index].rev >> 16) & 0xf) != FEATURE_FOR_FPGA) {
+	if (((btc08->chips[chip_index].rev >> 8) & 0xf) != FEATURE_FOR_FPGA) {
 		if(btc08->chips[chip_index].num_cores < btc08_config_options.min_cores) {
-			applog(LOG_ERR, "%d: chip %d has not enough cores(%d), it must be over than %d",
+			applog(LOG_ERR, "%d: failed. chip %d has not enough cores(%d), it must be over than %d",
 					cid, chip_id, btc08->chips[chip_index].num_cores, btc08_config_options.min_cores);
 			btc08->chips[chip_index].num_cores = 0;
 			btc08->chips[chip_index].perf = 0;
@@ -1206,9 +1327,14 @@ static int chain_detect(struct btc08_chain *btc08)
 	// SET_LAST_CHIP
 	if (btc08->num_chips != btc08->num_active_chips)
 	{
-		last_chipId = (chipId + 1);
-		set_control(btc08, last_chipId, (LAST_CHIP | btc08_config_options.udiv));
-
+		btc08->last_chip = (chipId + 1);
+		for(int chipId=1 ; chipId <= btc08->num_active_chips ; chipId++)
+		{
+			if( chipId == last_chip_id )
+				set_control(btc08, last_chipId, (LAST_CHIP | btc08_config_options.udiv));
+			else
+				set_control(btc08, last_chipId, (btc08_config_options.udiv));
+		}
 		ret = exec_cmd(btc08, SPI_CMD_AUTO_ADDRESS, BCAST_CHIP_ID, dummy, sizeof(dummy), RET_AUTO_ADDRESS_LEN);
 		if(ret[0] != SPI_CMD_AUTO_ADDRESS) {
 			applog(LOG_WARNING, "%d: error2 in AUTO_ADDRESS", cid);
@@ -1337,7 +1463,7 @@ static bool reinit_chain(struct btc08_chain *btc08)
 	// loop                   2, 3, 4, ...
 	//set_gpio_value(btc08->pinnum_gpio_vctrl, btc08->vctrl);
 	if(btc08->last_chip) {
-		if(!set_pll_fout_en(btc08, 1, 0)) {
+		if(!cmd_SET_PLL_FOUT_EN(btc08, 1, 0)) {
 			btc08->disabled = true;
 			applog(LOG_ERR, "%d: all chip_id:1 fail to set fout en to 0", btc08->chain_id);
 			return false;
@@ -1429,7 +1555,7 @@ static bool check_disabled_chips(struct btc08_chain *btc08)
 			applog(LOG_ERR, "%s():loop:chip_id:%d is disabled, because no reponce", __FUNCTION__, chip_id);
 			break;
 		}
-		if(((btc08->chips[btc08->num_chips-1].rev>>16)&0xf) != FEATURE_FOR_FPGA) {
+		if(((btc08->chips[btc08->num_chips-1].rev>>8)&0xf) != FEATURE_FOR_FPGA) {
 			if((ret[2]&0x7)>=OON_INT_MAXJOB) {
 				reset_flag = 1;
 				if(chip->mhz > pll_sets[0].freq) {
@@ -1966,11 +2092,12 @@ static void read_feature(struct btc08_chain *btc08, uint8_t chipId)
 {
 	uint8_t *ret;
 	uint32_t *ret32;
+	int idx = (chipId > 0) ? (chipId - 1) : 0;
 
 	ret = exec_cmd(btc08, SPI_CMD_READ_FEATURE, chipId, NULL, 0, RET_READ_FEATURE_LEN);
 	ret32 = (uint32_t *)ret;
-	btc08->chips[chipId].hash_depth = ret[3];
-	btc08->chips[chipId].rev = *ret32;
+	btc08->chips[idx].hash_depth = ret[3];
+	btc08->chips[idx].rev = *ret32;
 }
 
 /* Reinit btc08 chip */
@@ -2015,11 +2142,11 @@ static bool reinit_btc08_chip(struct btc08_chain *btc08)
 		read_feature(btc08, chip_id);
 		ret = exec_cmd(btc08, SPI_CMD_READ_REVISION, chip_id, NULL, 0, RET_READ_REVISION_LEN);
 		applog(LOG_ERR, "%d: chipId %d feature(0x%08x) date(%02x/%02x/%02x), index(%02x)",
-					chain_id, chip_id, btc08->chips[chip_id].rev, ret[0], ret[1], ret[2], ret[3]);
+					chain_id, chip_id, btc08->chips[chip_id-1].rev, ret[0], ret[1], ret[2], ret[3]);
 	}
 
 	// Check if there are enough chips on ASIC for mining
-	if (((btc08->chips[btc08->num_chips-1].rev >> 16) & 0xf) != FEATURE_FOR_FPGA) {
+	if (((btc08->chips[btc08->num_chips-1].rev >> 8) & 0xf) != FEATURE_FOR_FPGA) {
 		if (btc08->num_chips < btc08_config_options.min_chips) {
 			applog(LOG_ERR, "%d: failed to get enough chips(%d; it must be over than %d)",
 					chain_id, btc08->num_chips, btc08_config_options.min_chips);
@@ -2099,11 +2226,11 @@ struct btc08_chain *init_btc08_chain(struct spi_ctx *ctx, int chain_id)
 		read_feature(btc08, chip_id);
 		ret = exec_cmd(btc08, SPI_CMD_READ_REVISION, chip_id, NULL, 0, RET_READ_REVISION_LEN);
 		applog(LOG_INFO, "%d: chipId %d feature(0x%08x) date(%02x/%02x/%02x), index(%02x)",
-					chain_id, chip_id, btc08->chips[chip_id].rev, ret[0], ret[1], ret[2], ret[3]);
+					chain_id, chip_id, btc08->chips[chip_id-1].rev, ret[0], ret[1], ret[2], ret[3]);
 	}
 
 	// Check if there are enough chips on ASIC for mining
-	if (((btc08->chips[btc08->num_chips-1].rev >> 16) & 0xf) != FEATURE_FOR_FPGA) {
+	if (((btc08->chips[btc08->num_chips-1].rev >> 8) & 0xf) != FEATURE_FOR_FPGA) {
 		if (btc08->num_chips < btc08_config_options.min_chips) {
 			applog(LOG_ERR, "%d: failed to get enough chips(%d; it must be over than %d)",
 					chain_id, btc08->num_chips, btc08_config_options.min_chips);
@@ -2374,6 +2501,20 @@ void btc08_detect(bool hotplug)
 		btc08_config_options.test_mode = 1;
 	if (get_gpio_value(15) == 0)
 		btc08_config_options.test_mode = 1;
+
+	if (opt_btc08_test != NULL)
+	{
+		int num_chips = 0;
+		int num_cores = 0;
+
+		sscanf(opt_btc08_test, "%d:%d",
+		       &num_chips, &num_cores);
+
+		if (num_chips != 0)
+			btc08_config_options.num_chips = num_chips;
+		if (num_cores != 0)
+			btc08_config_options.num_cores = num_cores;
+	}
 
 	applog(LOG_DEBUG, "BTC08 detect");
 

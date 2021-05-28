@@ -290,6 +290,7 @@ char *opt_btc08_options = NULL;
 char *opt_btc08_min_cores = NULL;
 char *opt_btc08_min_chips = NULL;
 char *opt_btc08_chiptest = NULL;
+char *opt_btc08_test = NULL;
 bool opt_btc08_dump;
 #endif
 #ifdef USE_BITMINE_A1
@@ -1648,6 +1649,9 @@ static struct opt_table opt_config_table[] = {
 	OPT_WITHOUT_ARG("--btc08-dump",
 			opt_set_bool, &opt_btc08_dump,
 			"Verbose dump of btc08 spi protocol"),
+	OPT_WITH_ARG("--btc08-test",
+			opt_set_charp, NULL, &opt_btc08_test,
+			"Set the number of chips and cores to be used num_chips:num_cores"),
 #endif
 #ifdef USE_BITFURY
 	OPT_WITH_ARG("--bxf-bits",
