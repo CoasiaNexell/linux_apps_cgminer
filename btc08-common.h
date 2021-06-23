@@ -192,6 +192,7 @@ struct btc08_chain {
 	struct work *work[JOB_ID_NUM_MASK+1];
 	// a flag to prevent sending READ_ID cmd to all chips.
 	bool is_processing_job;
+	bool is_first_oon;
 	uint8_t last_queued_id;
 
 	/* mark chain disabled, do not try to re-enable it */

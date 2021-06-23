@@ -2546,6 +2546,7 @@ static int64_t btc08_scanwork(struct thr_info *thr)
 	uint32_t nonce[4];
 	uint8_t chip_id, job_id, micro_job_id;
 	uint8_t gn_job_id, gn_irq;
+
 	uint8_t *res;
 
 	if ((0 == btc08->num_cores) || (MAX_CORES < btc08->num_cores)) {
@@ -2562,8 +2563,9 @@ static int64_t btc08_scanwork(struct thr_info *thr)
 
 	mutex_lock(&btc08->lock);
 
-	applog(LOG_INFO, "BTC08 running scanwork",
-			(false == btc08->is_processing_job) ? "with the new works":"");
+	applog(LOG_ERR, "BTC08 running scanwork %s",
+			(false == btc08->is_processing_job) ? "with the first work":"");
+
 
 	if (!btc08->is_processing_job)
 	{
@@ -2582,6 +2584,7 @@ static int64_t btc08_scanwork(struct thr_info *thr)
 				goto failure;
 			} else {
 				btc08->is_processing_job = true;
+				btc08->is_first_oon = true;
 			}
 		}
 	}
@@ -2665,7 +2668,13 @@ static int64_t btc08_scanwork(struct thr_info *thr)
 		if (0 == get_gpio_value(btc08->pinnum_gpio_oon))
 		{
 			applog(LOG_INFO, "================= OON IRQ!!!! =================");
-			nonce_ranges_processed += 2;
+			if (btc08->is_first_oon) {
+				nonce_ranges_processed += 1;
+				btc08->is_first_oon = false;
+			} else {
+				nonce_ranges_processed += 2;
+			}
+
 			applog(LOG_DEBUG, "%d: job done ", cid);
 
 			cmd_CLEAR_OON(btc08, BCAST_CHIP_ID);
@@ -2703,7 +2712,11 @@ static int64_t btc08_scanwork(struct thr_info *thr)
 	}
 
 #if defined(USE_BTC08_FPGA)
-	return ((uint64_t)MAX_NONCE_SIZE + 1) * ASIC_BOOST_CORE_NUM * 2;
+	if (nonce_ranges_processed == 1) {
+		return ((uint64_t)MAX_NONCE_SIZE + 1) * ASIC_BOOST_CORE_NUM;
+	} else {
+		return ((uint64_t)MAX_NONCE_SIZE + 1) * 2 * ASIC_BOOST_CORE_NUM;
+	}
 #else
 	return ((int64_t)nonce_ranges_processed << 32) * ASIC_BOOST_CORE_NUM;		// nonce range : 4G
 #endif
